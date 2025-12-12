@@ -48,10 +48,10 @@ local function Modification1(child)
     ImageIcon.BackgroundTransparency = 1
     if game:GetService("CoreGui"):FindFirstChild(Player.."Locate") then
         LocateButton.HoverBackground.Icon.Image =  "rbxassetid://93890392372456"
-        LocateButton.HoverBackground:WaitForChild("Text").Text = "Unlocate Player"
+        LocateButton.HoverBackground:WaitForChild("Text").Text = "Untrack Player"
     else
         LocateButton.HoverBackground.Icon.Image = "rbxassetid://129354637755552"
-        LocateButton.HoverBackground:WaitForChild("Text").Text = "Locate Player"
+        LocateButton.HoverBackground:WaitForChild("Text").Text = "Track Player"
     end
     local HoverEnterListener = LocateButton.MouseEnter:Connect(function()
         LocateButton.HoverBackground.BackgroundColor3 = Color3.new(208,217,251)
@@ -64,8 +64,8 @@ local function Modification1(child)
         LocateButton.HoverBackground.BackgroundTransparency = 0.88
     end)
     local ActionListener = LocateButton.Activated:Connect(function()
-        if LocateButton.HoverBackground:WaitForChild("Text").Text == "Locate Player" then
-            LocateButton.HoverBackground:WaitForChild("Text").Text = "Unlocate Player"
+        if LocateButton.HoverBackground:WaitForChild("Text").Text == "Track Player" then
+            LocateButton.HoverBackground:WaitForChild("Text").Text = "Untrack Player"
             ImageIcon.Image =  "rbxassetid://93890392372456"
             local Player = DropDown.PlayerHeader.Background.TextContainerFrame.PlayerName.Text:sub(2)
             local Character = game:GetService("Players")[Player].Character or game:GetService("Players")[Player].CharacterAdded:Wait()
@@ -187,7 +187,7 @@ local function Modification1(child)
                     end
                 end
             end
-            LocateButton.HoverBackground:WaitForChild("Text").Text = "Locate Player"
+            LocateButton.HoverBackground:WaitForChild("Text").Text = "Track Player"
         end
     end)
     if DropDown.Size == UDim2.new(0,304,0,304) then
@@ -198,10 +198,10 @@ local function Modification1(child)
     local SelectionChangedListener = DropDown.PlayerHeader.Background.TextContainerFrame.PlayerName:GetPropertyChangedSignal('Text'):Connect(function()
         local Player = DropDown.PlayerHeader.Background.TextContainerFrame.PlayerName.Text:sub(2)
         if game:GetService("CoreGui"):FindFirstChild(Player.."Locate") then
-            LocateButton.HoverBackground:WaitForChild("Text").Text = "Unlocate Player"
+            LocateButton.HoverBackground:WaitForChild("Text").Text = "Untrack Player"
             LocateButton.HoverBackground.Icon.Image =  "rbxassetid://93890392372456"
         else
-            LocateButton.HoverBackground:WaitForChild("Text").Text = "Locate Player"
+            LocateButton.HoverBackground:WaitForChild("Text").Text = "Track Player"
             LocateButton.HoverBackground.Icon.Image = "rbxassetid://129354637755552"
         end
     end)
