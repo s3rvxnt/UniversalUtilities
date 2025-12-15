@@ -5,7 +5,7 @@ local function Modification1(child)
     local ActualList = Container:WaitForChild("ScrollingFrameClippingFrame"):WaitForChild("ScrollingFrame"):WaitForChild("OffsetUndoFrame")
     local DropDown = child
     local LocateButton = DropDown.InnerFrame.InspectButton:Clone()
-    LocateButton.Parent = DropDown
+    LocateButton.Parent = DropDown.InnerFrame
     if not LocateButton:FindFirstChild('Divider') then
         LocateButton.Image = ""
         LocateButton.BackgroundTransparency = 0.3
@@ -20,22 +20,9 @@ local function Modification1(child)
         Divider.Size = UDim2.new(1,0,0,1)
         Divider.ZIndex = 3
     end
-    local UIListLayout = DropDown.InnerFrame.UIListLayout:Clone()
-    UIListLayout.Parent = DropDown
-    DropDown.InnerFrame:WaitForChild("PlayerHeader").Parent = DropDown
-    DropDown.PlayerHeader.Visible = DropDown.InnerFrame.Visible
-    LocateButton.Visible = DropDown.InnerFrame.Visible
-    DropDown.PlayerHeader.Size = UDim2.new(1, -4, 0, 80)
-    LocateButton.Size = UDim2.new(1, -4, 0, 56)
-    local Player = DropDown.PlayerHeader.Background.TextContainerFrame.PlayerName.Text:sub(2)
-    local VisibilityListener = DropDown.InnerFrame:GetPropertyChangedSignal("Visible"):Connect(function()
-        if DropDown.PlayerHeader.Visible ~= DropDown.InnerFrame.Visible or LocateButton.Visible ~= DropDown.InnerFrame.Visible then
-            DropDown.PlayerHeader.Visible = DropDown.InnerFrame.Visible
-            LocateButton.Visible = DropDown.InnerFrame.Visible
-        end
-    end)
-    DropDown.InnerFrame.LayoutOrder = 2
-    LocateButton.LayoutOrder = 1
+    local Player = DropDown.InnerFrame:WaitForChild("PlayerHeader"):WaitForChild("Background"):WaitForChild("TextContainerFrame"):WaitForChild("PlayerName").Text:sub(2)
+    DropDown.InnerFrame.PlayerHeader.LayoutOrder = -1
+    LocateButton.LayoutOrder = 0
     LocateButton.Name = "LocateButton"
     LocateButton.HoverBackground.Icon:Destroy()
     local ImageIcon = Instance.new("ImageLabel")
@@ -67,7 +54,7 @@ local function Modification1(child)
         if LocateButton.HoverBackground:WaitForChild("Text").Text == "Track Player" then
             LocateButton.HoverBackground:WaitForChild("Text").Text = "Untrack Player"
             ImageIcon.Image =  "rbxassetid://93890392372456"
-            local Player = DropDown.PlayerHeader.Background.TextContainerFrame.PlayerName.Text:sub(2)
+            local Player = DropDown.InnerFrame.PlayerHeader.Background.TextContainerFrame.PlayerName.Text:sub(2)
             local Character = game:GetService("Players")[Player].Character or game:GetService("Players")[Player].CharacterAdded:Wait()
             local Highlight = Instance.new("Highlight")
             Highlight.Name = Player.."Locate"
@@ -181,7 +168,7 @@ local function Modification1(child)
             end)
         else
             ImageIcon.Image = "rbxassetid://129354637755552"
-            local Player = DropDown.PlayerHeader.Background.TextContainerFrame.PlayerName.Text:sub(2)
+            local Player = DropDown.InnerFrame.PlayerHeader.Background.TextContainerFrame.PlayerName.Text:sub(2)
             game:GetService("CoreGui"):FindFirstChild(Player.."Locate"):Destroy()
             local player = game:GetService("Players")[Player]
             for _,teamlist in ActualList:GetChildren() do
@@ -205,8 +192,8 @@ local function Modification1(child)
     elseif DropDown.Size == UDim2.new(0,304,0,136) then
         DropDown.Size = UDim2.new(0,304,0,192)
     end
-    local SelectionChangedListener = DropDown.PlayerHeader.Background.TextContainerFrame.PlayerName:GetPropertyChangedSignal('Text'):Connect(function()
-        local Player = DropDown.PlayerHeader.Background.TextContainerFrame.PlayerName.Text:sub(2)
+    local SelectionChangedListener = DropDown.InnerFrame.PlayerHeader.Background.TextContainerFrame.PlayerName:GetPropertyChangedSignal('Text'):Connect(function()
+        local Player = DropDown.InnerFrame.PlayerHeader.Background.TextContainerFrame.PlayerName.Text:sub(2)
         if game:GetService("CoreGui"):FindFirstChild(Player.."Locate") then
             LocateButton.HoverBackground:WaitForChild("Text").Text = "Untrack Player"
             LocateButton.HoverBackground.Icon.Image =  "rbxassetid://93890392372456"
@@ -226,10 +213,10 @@ local function Modification1(child)
     DropDown.AncestryChanged:Once(function()
         SelectionChangedListener:Disconnect()
         ActionListener:Disconnect()
-        VisibilityListener:Disconnect()
         HoverLeaveListener:Disconnect()
         HoverEnterListener:Disconnect()
         HoldListener:Disconnect()
+        SizeChangedListener:Disconnect()
     end)
 end
 
