@@ -88,6 +88,7 @@ local function Modification1(child)
                 end
             end
             local player = game:GetService("Players")[Player]
+            local currentTeam = player.Team
             task.spawn(function()
                 repeat task.wait()
                     pcall(function()
@@ -105,6 +106,25 @@ local function Modification1(child)
                                     if HighlightPart.Color3 ~= player.TeamColor.Color then
                                         HighlightPart.Color3 = player.TeamColor.Color
                                     end
+                                    if HighlightPart.Size ~= Character:WaitForChild(HighlightPart.Name).Size then
+                                        HighlightPart.Size = Character:WaitForChild(HighlightPart.Name).Size
+                                    end
+                                end
+                            end
+                            if player.Team ~= currentTeam then
+                                currentTeam = player.Team
+                                local NamePlate = ActualList:WaitForChild("TeamList_"..currentTeam.Name):WaitForChild("PlayerEntry_"..player.UserId, true):WaitForChild("PlayerEntryContentFrame"):WaitForChild("OverlayFrame"):WaitForChild("NameFrame")
+                                local LocatorIcon = Instance.new("ImageLabel")
+                                LocatorIcon.Parent = NamePlate
+                                LocatorIcon.Name = "LocatorIcon"
+                                LocatorIcon.LayoutOrder = 0
+                                LocatorIcon.Size = UDim2.new(0,16,0,16)
+                                LocatorIcon.BackgroundTransparency = 1
+                                LocatorIcon.Image = "rbxassetid://83346450342441"
+                                LocatorIcon.ImageRectOffset = Vector2.new(0, 0)
+                                LocatorIcon.ImageRectSize = Vector2.new(0, 0)
+                                if NamePlate.PlayerIcon:IsA("ImageLabel") then
+                                    NamePlate.PlayerIcon.Visible = false
                                 end
                             end
                         else
@@ -119,13 +139,13 @@ local function Modification1(child)
                 for _, HighlightPart in Highlight:GetChildren() do
                     if HighlightPart:IsA("BoxHandleAdornment") then
                         HighlightPart.Adornee = Character:WaitForChild(HighlightPart.Name)
-                        HighlightPart.Size = Character:WaitForChild(HighlightPart.Name).Size
                     end
                 end
+                Highlight:FindFirstChildOfClass("BillboardGui").Adornee = Character:WaitForChild("Head")
             end)
             local BillboardGui = Instance.new("BillboardGui")
             local TextLabel = Instance.new("TextLabel")
-            BillboardGui.Adornee = Character.Head
+            BillboardGui.Adornee = Character:WaitForChild("Head")
             BillboardGui.Name = Player
             BillboardGui.Parent = Highlight
             BillboardGui.Size = UDim2.new(0, 100, 0, 150)
@@ -142,28 +162,18 @@ local function Modification1(child)
             TextLabel.TextYAlignment = Enum.TextYAlignment.Bottom
             TextLabel.Text = Player
             TextLabel.ZIndex = 10
-            for _,teamlist in ActualList:GetChildren() do
-                if teamlist:IsA("Frame") then
-                    for _,PlayerEntry in teamlist:GetChildren() do
-                        if string.find(PlayerEntry.Name,"PlayerEntry") then
-                            if tostring(player.UserId) == string.gsub(PlayerEntry.Name,"PlayerEntry_","") then
-                                local NamePlate = PlayerEntry:WaitForChild("PlayerEntryContentFrame"):WaitForChild("OverlayFrame"):WaitForChild("NameFrame")
-                                local LocatorIcon = Instance.new("ImageLabel")
-                                LocatorIcon.Parent = NamePlate
-                                LocatorIcon.Name = "LocatorIcon"
-                                LocatorIcon.LayoutOrder = 0
-                                LocatorIcon.Size = UDim2.new(0,16,0,16)
-                                LocatorIcon.BackgroundTransparency = 1
-                                LocatorIcon.Image = "rbxassetid://83346450342441"
-                                LocatorIcon.ImageRectOffset = Vector2.new(0, 0)
-                                LocatorIcon.ImageRectSize = Vector2.new(0, 0)
-                                if NamePlate.PlayerIcon:IsA("ImageLabel") then
-                                    NamePlate.PlayerIcon.Visible = false
-                                end
-                            end
-                        end
-                    end
-                end
+            local NamePlate = ActualList:FindFirstChild("PlayerEntry_"..player.UserId, true):WaitForChild("PlayerEntryContentFrame"):WaitForChild("OverlayFrame"):WaitForChild("NameFrame")
+            local LocatorIcon = Instance.new("ImageLabel")
+            LocatorIcon.Parent = NamePlate
+            LocatorIcon.Name = "LocatorIcon"
+            LocatorIcon.LayoutOrder = 0
+            LocatorIcon.Size = UDim2.new(0,16,0,16)
+            LocatorIcon.BackgroundTransparency = 1
+            LocatorIcon.Image = "rbxassetid://83346450342441"
+            LocatorIcon.ImageRectOffset = Vector2.new(0, 0)
+            LocatorIcon.ImageRectSize = Vector2.new(0, 0)
+            if NamePlate.PlayerIcon:IsA("ImageLabel") then
+                NamePlate.PlayerIcon.Visible = false
             end
             game:GetService("RunService").Heartbeat:Wait()
             Highlight.AncestryChanged:Once(function()
