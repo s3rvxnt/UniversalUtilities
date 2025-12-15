@@ -61,6 +61,12 @@ local function Modification1(child)
             Highlight.Parent = game:GetService("CoreGui")
             Highlight.Adornee = Character
             Highlight.FillColor = game:GetService("Players")[Player].TeamColor.Color
+            local Color = Highlight.FillColor
+            if (Color.R * 0.299 + Color.G * 0.587 + Color.B * 0.114) > 0.5 then
+                Highlight.OutlineColor = Color3.new(0,0,0)
+            else
+                Highlight.OutlineColor = Color3.new(1,1,1)
+            end
             Highlight.FillTransparency = 0
             for _, Bodypart in Character:GetChildren() do
                 if Bodypart:IsA("MeshPart") then
@@ -85,6 +91,12 @@ local function Modification1(child)
                             Highlight.OutlineTransparency = math.clamp(Magnitude/100,0,1) * 0.5
                             if Highlight.FillColor ~= player.TeamColor.Color then
                                 Highlight.FillColor = player.TeamColor.Color
+                                local Color = Highlight.FillColor
+                                if (Color.R * 0.299 + Color.G * 0.587 + Color.B * 0.114) > 0.5 then
+                                    Highlight.OutlineColor = Color3.new(0,0,0)
+                                else
+                                    Highlight.OutlineColor = Color3.new(1,1,1)
+                                end
                             end
                             for _, HighlightPart in Highlight:GetChildren() do
                                 if HighlightPart:IsA("BoxHandleAdornment") then
