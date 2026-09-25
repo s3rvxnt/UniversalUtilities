@@ -658,15 +658,30 @@ end
 
 -- ============================================================================
 -- Section 5: Personal Space Bubble Engine (Nearby Player Fade)
--- Dual-layer radial distance falloff + temporal frame lerping
+-- Binary state with smooth temporal fade on enter/exit (no distance falloff)
 -- ============================================================================
 local PersonalSpaceBubble = {}
 local bubbleConn
-local partAlphas = setmetatable({}, { __mode = "k" })
+local charAlphas = {}
+local charInside = {}
+
+local BUBBLE_TARGET_ALPHA = 0.85
+local FADE_SPEED = 7
+local HYSTERESIS_BUFFER = 1.0
 
 local function StepToRadius(step)
     if not step or step <= 0 then return 0 end
     return 3 + (step - 1) * (12 / 9)
+end
+
+local function ApplyCharTransparency(char, alpha)
+    for _, desc in ipairs(char:GetDescendants()) do
+        if desc:IsA("BasePart") and desc.Name ~= "HumanoidRootPart" then
+            pcall(function()
+                desc.LocalTransparencyModifier = alpha
+            end)
+        end
+    end
 end
 
 function PersonalSpaceBubble.Enable()
@@ -681,8 +696,9 @@ function PersonalSpaceBubble.Enable()
             PersonalSpaceBubble.Disable()
             return
         end
+
         local radius = StepToRadius(step)
-        local innerRadius = math.max(1, radius * 0.35)
+        local exitRadius = radius + HYSTERESIS_BUFFER
 
         local lp = GetLocalPlayer()
         local myChar = lp and lp.Character
@@ -690,74 +706,52 @@ function PersonalSpaceBubble.Enable()
         if not myRoot then return end
         local myPos = myRoot.Position
 
-        local targetAlphas = {}
+        local activeChars = {}
 
         for _, p in ipairs(Players:GetPlayers()) do
             if p ~= lp and p.Character then
                 local char = p.Character
                 local root = char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Head")
                 if root then
+                    activeChars[char] = true
                     local dist = (root.Position - myPos).Magnitude
-                    local targetAlpha = 0
-                    if dist <= radius then
-                        if dist <= innerRadius then
-                            targetAlpha = 0.85
-                        else
-                            local factor = 1 - ((dist - innerRadius) / (radius - innerRadius))
-                            targetAlpha = 0.85 * factor
-                        end
-                    end
 
-                    if targetAlpha > 0 or dist <= radius + 5 then
-                        for _, part in ipairs(char:GetDescendants()) do
-                            if part:IsA("BasePart") then
-                                targetAlphas[part] = targetAlpha
-                            end
+                    local wasInside = charInside[char] or false
+                    local isInside = false
+                    if wasInside then
+                        isInside = (dist <= exitRadius)
+                    else
+                        isInside = (dist <= radius)
+                    end
+                    charInside[char] = isInside
+
+                    local targetAlpha = isInside and BUBBLE_TARGET_ALPHA or 0
+                    local currentAlpha = charAlphas[char] or 0
+
+                    if isInside or currentAlpha > 0 then
+                        local lerpFactor = math.clamp(dt * FADE_SPEED, 0, 1)
+                        local newAlpha = currentAlpha + (targetAlpha - currentAlpha) * lerpFactor
+
+                        if math.abs(newAlpha - targetAlpha) < 0.008 then
+                            newAlpha = targetAlpha
+                        end
+
+                        charAlphas[char] = newAlpha
+                        ApplyCharTransparency(char, newAlpha)
+
+                        if newAlpha == 0 and not isInside then
+                            charAlphas[char] = nil
+                            charInside[char] = nil
                         end
                     end
                 end
             end
         end
 
-        local lerpSpeed = math.clamp(dt * 12, 0, 1)
-
-        for part, targetAlpha in pairs(targetAlphas) do
-            local currentAlpha = partAlphas[part] or 0
-            local newAlpha = currentAlpha + (targetAlpha - currentAlpha) * lerpSpeed
-            if math.abs(newAlpha - targetAlpha) < 0.01 then
-                newAlpha = targetAlpha
-            end
-
-            if newAlpha > 0.005 then
-                partAlphas[part] = newAlpha
-                pcall(function()
-                    part.LocalTransparencyModifier = newAlpha
-                end)
-            else
-                if currentAlpha > 0 then
-                    partAlphas[part] = nil
-                    pcall(function()
-                        part.LocalTransparencyModifier = 0
-                    end)
-                end
-            end
-        end
-
-        for part, _ in pairs(partAlphas) do
-            if not targetAlphas[part] then
-                local currentAlpha = partAlphas[part] or 0
-                local newAlpha = currentAlpha + (0 - currentAlpha) * lerpSpeed
-                if newAlpha <= 0.01 then
-                    partAlphas[part] = nil
-                    pcall(function()
-                        part.LocalTransparencyModifier = 0
-                    end)
-                else
-                    partAlphas[part] = newAlpha
-                    pcall(function()
-                        part.LocalTransparencyModifier = newAlpha
-                    end)
-                end
+        for char, _ in pairs(charAlphas) do
+            if not activeChars[char] then
+                charAlphas[char] = nil
+                charInside[char] = nil
             end
         end
     end)
@@ -769,12 +763,13 @@ function PersonalSpaceBubble.Disable()
         bubbleConn:Disconnect()
         bubbleConn = nil
     end
-    for part, _ in pairs(partAlphas) do
-        pcall(function()
-            part.LocalTransparencyModifier = 0
-        end)
+    for char, _ in pairs(charAlphas) do
+        if char and char.Parent then
+            ApplyCharTransparency(char, 0)
+        end
     end
-    table.clear(partAlphas)
+    charAlphas = {}
+    charInside = {}
 end
 
 -- ============================================================================
