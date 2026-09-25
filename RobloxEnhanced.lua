@@ -1290,6 +1290,37 @@ local function SortCandidatesByDistance(a, b)
     return a.Distance < b.Distance
 end
 
+local function GetScreenEdgeIntersection(startPos, dir, viewportSize, margin)
+    margin = margin or 15
+    local minX, maxX = margin, viewportSize.X - margin
+    local minY, maxY = margin, viewportSize.Y - margin
+
+    local clampedStart = Vector2.new(
+        math.clamp(startPos.X, minX, maxX),
+        math.clamp(startPos.Y, minY, maxY)
+    )
+
+    local tX = math.huge
+    if dir.X > 0.0001 then
+        tX = (maxX - clampedStart.X) / dir.X
+    elseif dir.X < -0.0001 then
+        tX = (minX - clampedStart.X) / dir.X
+    end
+
+    local tY = math.huge
+    if dir.Y > 0.0001 then
+        tY = (maxY - clampedStart.Y) / dir.Y
+    elseif dir.Y < -0.0001 then
+        tY = (minY - clampedStart.Y) / dir.Y
+    end
+
+    local t = math.min(tX, tY)
+    if t < 0 or t == math.huge then
+        t = 100
+    end
+    return clampedStart + dir * t
+end
+
 local RenderConnection = RunService.RenderStepped:Connect(function()
     local Camera = Workspace.CurrentCamera
     if not Camera then return end
@@ -1303,10 +1334,14 @@ local RenderConnection = RunService.RenderStepped:Connect(function()
     
     local tracerStartPos
     if inFirstPerson or not myRoot then
-        tracerStartPos = Vector2.new(viewportSize.X * 0.5, viewportSize.Y)
+        tracerStartPos = Vector2.new(viewportSize.X * 0.5, viewportSize.Y * 0.8)
     else
-        local root2D, onScreen = Camera:WorldToViewportPoint(myRoot.Position)
-        tracerStartPos = Vector2.new(root2D.X, root2D.Y)
+        local root2D, rootInFrustum = Camera:WorldToViewportPoint(myRoot.Position)
+        if root2D.Z > 0 then
+            tracerStartPos = Vector2.new(root2D.X, root2D.Y)
+        else
+            tracerStartPos = Vector2.new(viewportSize.X * 0.5, viewportSize.Y * 0.8)
+        end
     end
     
     table.clear(visibleCandidates)
@@ -1342,6 +1377,9 @@ local RenderConnection = RunService.RenderStepped:Connect(function()
             local screenPos, inFrustum = Camera:WorldToViewportPoint(rootPos)
             local isBehind = screenPos.Z < 0
             local onScreen = not isBehind and 
+                             screenPos.X >= 15 and screenPos.X <= (viewportSize.X - 15) and 
+                             screenPos.Y >= 15 and screenPos.Y <= (viewportSize.Y - 15)
+            local inHighlightFrustum = not isBehind and 
                              screenPos.X >= -150 and screenPos.X <= (viewportSize.X + 150) and 
                              screenPos.Y >= -150 and screenPos.Y <= (viewportSize.Y + 150)
             
@@ -1373,24 +1411,33 @@ local RenderConnection = RunService.RenderStepped:Connect(function()
                 if not config.locator_tracers then
                     tracerLine.Visible = false
                 else
-                    local targetScreenPos = Vector2.new(screenPos.X, screenPos.Y)
+                    local targetScreenPos
+                    local isOffScreen = false
+
                     if isBehind then
-                        local center = viewportSize * 0.5
-                        targetScreenPos = center - (targetScreenPos - center)
+                        isOffScreen = true
+                        local localPos = Camera.CFrame:PointToObjectSpace(rootPos)
+                        local forwardBack = math.max(0.1, localPos.Z)
+                        local dir = Vector2.new(localPos.X, forwardBack - localPos.Y * 0.3)
+                        if dir.Magnitude < 0.001 then
+                            dir = Vector2.new(0, 1)
+                        else
+                            dir = dir.Unit
+                        end
+                        targetScreenPos = GetScreenEdgeIntersection(tracerStartPos, dir, viewportSize, 15)
+                    elseif not onScreen then
+                        isOffScreen = true
+                        local delta = Vector2.new(screenPos.X, screenPos.Y) - tracerStartPos
+                        local dir = delta.Magnitude > 0.001 and delta.Unit or Vector2.new(0, -1)
+                        targetScreenPos = GetScreenEdgeIntersection(tracerStartPos, dir, viewportSize, 15)
+                    else
+                        targetScreenPos = Vector2.new(screenPos.X, screenPos.Y)
                     end
-                    
-                    local isOffScreen = (not onScreen) or isBehind
+
                     local delta = targetScreenPos - tracerStartPos
                     local dist2D = delta.Magnitude
-                    
+
                     if dist2D > 1 then
-                        local dir = delta / dist2D
-                        if isOffScreen then
-                            targetScreenPos = tracerStartPos + (dir * 10000)
-                            delta = targetScreenPos - tracerStartPos
-                            dist2D = delta.Magnitude
-                        end
-                        
                         local isObstructed = false
                         if not isOffScreen and head and myChar then
                             local headPos = (head:IsA("BasePart") and head.Position) or (rootPart and rootPart.Position)
@@ -1401,15 +1448,15 @@ local RenderConnection = RunService.RenderStepped:Connect(function()
                                 if rayHit then isObstructed = true end
                             end
                         end
-                        
+
                         local midPoint = (tracerStartPos + targetScreenPos) * 0.5
                         local angle = math.deg(math.atan2(delta.Y, delta.X))
-                        
+
                         tracerLine.Size = UDim2.new(0, dist2D, 0, 1)
                         tracerLine.Position = UDim2.new(0, midPoint.X, 0, midPoint.Y)
                         tracerLine.Rotation = angle
                         tracerLine.Visible = true
-                        
+
                         local tracerTransparency = (isOffScreen or isObstructed) and 0 or (1.3 - math.clamp(camDist / 100, 0, 1))
                         tracerLine.BackgroundTransparency = tracerTransparency
                     else
@@ -1418,7 +1465,7 @@ local RenderConnection = RunService.RenderStepped:Connect(function()
                 end
             end
             
-            if onScreen then
+            if inHighlightFrustum then
                 table.insert(visibleCandidates, {
                     Character = character,
                     Distance = camDist,
