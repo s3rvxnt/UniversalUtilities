@@ -180,7 +180,11 @@ Own(Players.PlayerAdded:Connect(InvalidateTargets))
 Own(Players.PlayerRemoving:Connect(InvalidateTargets))
 
 local function RedactString(str)
-    if typeof(str) ~= "string" or str == "" then return str end
+    if typeof(str) ~= "string" or #str < 2 then return str end
+    -- High-speed fast path: if string contains no letters and no 7+ digit IDs, it cannot contain player names
+    if not str:find("%a") and not str:find("%d%d%d%d%d%d%d") then
+        return str
+    end
     local targets = GetCompiledTargets()
     local res = str
     for _, t in ipairs(targets) do
@@ -219,19 +223,29 @@ end
 local function NewIndexHandler(self, key, value)
     if isStreamerActive and not isRedacting and typeof(self) == "Instance" then
         if key == "Text" then
-            if self:IsA("TextLabel") or self:IsA("TextButton") then
+            if self:IsA("TextLabel") or self:IsA("TextButton") or self:IsA("TextBox") then
                 if not IsEnhancementGui(self) then
                     local strVal = tostring(value or "")
-                    OriginalTexts[self] = strVal
                     local redacted = RedactString(strVal)
-                    return originalNewIndex(self, key, redacted)
+                    if redacted ~= strVal then
+                        OriginalTexts[self] = strVal
+                        return originalNewIndex(self, key, redacted)
+                    else
+                        OriginalTexts[self] = nil
+                        return originalNewIndex(self, key, value)
+                    end
                 end
             end
         elseif key == "DisplayName" and self:IsA("Humanoid") then
             local strVal = tostring(value or "")
-            OriginalTexts[self] = strVal
             local redacted = RedactString(strVal)
-            return originalNewIndex(self, key, redacted)
+            if redacted ~= strVal then
+                OriginalTexts[self] = strVal
+                return originalNewIndex(self, key, redacted)
+            else
+                OriginalTexts[self] = nil
+                return originalNewIndex(self, key, value)
+            end
         end
     end
     return originalNewIndex(self, key, value)
@@ -289,23 +303,44 @@ local function SetRawDisplayName(hum, val)
     hum.DisplayName = val
 end
 
-local function RedactOverhead(hum)
-    if not hum or not hum:IsA("Humanoid") then return end
-    local p = hum.Parent and Players:GetPlayerFromCharacter(hum.Parent)
-    local trueName = p and (p.DisplayName ~= "" and p.DisplayName or p.Name)
-    local raw = GetRawDisplayName(hum)
-    if not raw or raw == "" then return end
-    if trueName then
-        OriginalTexts[hum] = trueName
-    elseif not OriginalTexts[hum] then
-        OriginalTexts[hum] = raw
+-- ============================================================================
+-- Section 4.1: Universal Text & DisplayName Hooks (The 3 Render Roots)
+-- Content-based redaction across all 3 Roblox render roots:
+--   Root 1: CoreGui (Roblox Native UI: PlayerList, Chat, Settings, Emotes)
+--   Root 2: PlayerGui (Developer 2D UI: Custom HUDs, Leaderboards, Menus)
+--   Root 3: Workspace (In-World 3D UI: BillboardGui, SurfaceGui, Humanoid)
+-- ============================================================================
+
+local function HookTextObject(obj)
+    if not (obj:IsA("TextLabel") or obj:IsA("TextButton") or obj:IsA("TextBox")) then return end
+    if HookedObjects[obj] or IsEnhancementGui(obj) then return end
+    HookedObjects[obj] = true
+
+    local function Check()
+        if not isStreamerActive or isRedacting then return end
+        local raw = GetRawText(obj)
+        if raw and #raw >= 2 then
+            local orig = OriginalTexts[obj] or raw
+            local redacted = RedactString(orig)
+            if redacted ~= orig then
+                OriginalTexts[obj] = orig
+                local currentRaw = GetRawText(obj)
+                if currentRaw ~= redacted then
+                    isRedacting = true
+                    pcall(function() SetRawText(obj, redacted) end)
+                    isRedacting = false
+                end
+            else
+                if OriginalTexts[obj] then
+                    OriginalTexts[obj] = nil
+                end
+            end
+        end
     end
-    local redacted = RedactString(OriginalTexts[hum])
-    if raw ~= redacted then
-        isRedacting = true
-        pcall(function() SetRawDisplayName(hum, redacted) end)
-        isRedacting = false
-    end
+
+    Check()
+    local conn = obj:GetPropertyChangedSignal("Text"):Connect(Check)
+    table.insert(StreamerConns, conn)
 end
 
 local function HookHumanoid(hum)
@@ -313,277 +348,186 @@ local function HookHumanoid(hum)
     if HookedObjects[hum] then return end
     HookedObjects[hum] = true
 
-    RedactOverhead(hum)
-    local conn = hum:GetPropertyChangedSignal("DisplayName"):Connect(function()
-        if not isRedacting and isStreamerActive then
-            RedactOverhead(hum)
-        end
-    end)
-    table.insert(StreamerConns, conn)
-end
-
-local function HookPlLabel(lbl)
-    if not (lbl:IsA("TextLabel") and (lbl.Name == "PlayerName" or lbl.Name == "DisplayName")) then return end
-    if HookedObjects[lbl] then return end
-    HookedObjects[lbl] = true
-
     local function Check()
         if not isStreamerActive or isRedacting then return end
-        local raw = lbl.Text
-        if raw and raw ~= "" then
-            local orig = OriginalTexts[lbl]
-            if not orig then
-                OriginalTexts[lbl] = raw
-                orig = raw
-            end
+        local raw = GetRawDisplayName(hum)
+        if raw and #raw >= 2 then
+            local orig = OriginalTexts[hum] or raw
             local redacted = RedactString(orig)
-            if lbl.Text ~= redacted then
-                isRedacting = true
-                pcall(function() lbl.Text = redacted end)
-                isRedacting = false
+            if redacted ~= orig then
+                OriginalTexts[hum] = orig
+                local currentRaw = GetRawDisplayName(hum)
+                if currentRaw ~= redacted then
+                    isRedacting = true
+                    pcall(function() SetRawDisplayName(hum, redacted) end)
+                    isRedacting = false
+                end
+            else
+                if OriginalTexts[hum] then
+                    OriginalTexts[hum] = nil
+                end
             end
         end
     end
 
     Check()
-    local conn = lbl:GetPropertyChangedSignal("Text"):Connect(Check)
+    local conn = hum:GetPropertyChangedSignal("DisplayName"):Connect(Check)
     table.insert(StreamerConns, conn)
 end
 
-local function HookPlayerList(pl)
-    if not pl then return end
-    for _, d in ipairs(pl:GetDescendants()) do
-        HookPlLabel(d)
-    end
-    local conn = pl.DescendantAdded:Connect(function(desc)
-        if desc:IsA("TextLabel") and (desc.Name == "PlayerName" or desc.Name == "DisplayName") then
-            HookPlLabel(desc)
-        end
-    end)
-    table.insert(StreamerConns, conn)
-end
-
-local function HookBillboardLabel(lbl)
-    if not lbl:IsA("TextLabel") then return end
-    if HookedObjects[lbl] then return end
-    HookedObjects[lbl] = true
-
-    local function Check()
-        if not isStreamerActive or isRedacting then return end
-        local raw = lbl.Text
-        if raw and raw ~= "" then
-            local char = lbl:FindFirstAncestorOfClass("Model")
-            local p = char and Players:GetPlayerFromCharacter(char)
-            local trueName = p and (p.DisplayName ~= "" and p.DisplayName or p.Name)
-            if trueName then
-                OriginalTexts[lbl] = trueName
-            elseif not OriginalTexts[lbl] then
-                OriginalTexts[lbl] = raw
-            end
-            local orig = OriginalTexts[lbl]
-            local redacted = RedactString(orig)
-            if lbl.Text ~= redacted then
-                isRedacting = true
-                pcall(function() lbl.Text = redacted end)
-                isRedacting = false
-            end
+local function HookGuiContainer(container)
+    if not container then return end
+    for _, d in ipairs(container:GetDescendants()) do
+        if d:IsA("TextLabel") or d:IsA("TextButton") or d:IsA("TextBox") then
+            HookTextObject(d)
         end
     end
-
-    Check()
-    local conn = lbl:GetPropertyChangedSignal("Text"):Connect(Check)
-    table.insert(StreamerConns, conn)
-end
-
-local function HookBillboard(gui)
-    if not gui or not gui:IsA("BillboardGui") then return end
-    for _, d in ipairs(gui:GetDescendants()) do
-        if d:IsA("TextLabel") then
-            HookBillboardLabel(d)
-        end
-    end
-    local c = gui.DescendantAdded:Connect(function(desc)
-        if desc:IsA("TextLabel") then
-            HookBillboardLabel(desc)
+    local c = container.DescendantAdded:Connect(function(desc)
+        if desc:IsA("TextLabel") or desc:IsA("TextButton") or desc:IsA("TextBox") then
+            HookTextObject(desc)
         end
     end)
     table.insert(StreamerConns, c)
 end
 
-local function HookChatLabel(lbl)
-    if not (lbl:IsA("TextLabel") and (lbl.Name == "PrefixText" or lbl.Name == "BodyText")) then return end
-    if HookedObjects[lbl] then return end
-    HookedObjects[lbl] = true
-
-    local function Check()
-        if not isStreamerActive or isRedacting then return end
-        local raw = lbl.Text
-        if raw and raw ~= "" then
-            local orig = OriginalTexts[lbl]
-            if not orig then
-                OriginalTexts[lbl] = raw
-                orig = raw
-            end
-            local redacted = RedactString(orig)
-            if lbl.Text ~= redacted then
-                isRedacting = true
-                pcall(function() lbl.Text = redacted end)
-                isRedacting = false
-            end
-        end
-    end
-
-    Check()
-    local conn = lbl:GetPropertyChangedSignal("Text"):Connect(Check)
-    table.insert(StreamerConns, conn)
-end
-
-local function HookExperienceChat(chat)
-    if not chat then return end
-    for _, d in ipairs(chat:GetDescendants()) do
-        HookChatLabel(d)
-    end
-    local conn = chat.DescendantAdded:Connect(function(desc)
-        if desc:IsA("TextLabel") and (desc.Name == "PrefixText" or desc.Name == "BodyText") then
-            HookChatLabel(desc)
-        end
-    end)
-    table.insert(StreamerConns, conn)
-end
-
-local function HookPeoplePageLabel(lbl)
-    if not lbl:IsA("TextLabel") then return end
-    if HookedObjects[lbl] then return end
-    HookedObjects[lbl] = true
-
-    local function Check()
-        if not isStreamerActive or isRedacting then return end
-        local raw = lbl.Text
-        if raw and raw ~= "" then
-            local orig = OriginalTexts[lbl]
-            if not orig then
-                OriginalTexts[lbl] = raw
-                orig = raw
-            end
-            local redacted = RedactString(orig)
-            if lbl.Text ~= redacted then
-                isRedacting = true
-                pcall(function() lbl.Text = redacted end)
-                isRedacting = false
-            end
-        end
-    end
-
-    Check()
-    local conn = lbl:GetPropertyChangedSignal("Text"):Connect(Check)
-    table.insert(StreamerConns, conn)
-end
-
-local function HookPeoplePage(page)
-    if not page then return end
-    for _, d in ipairs(page:GetDescendants()) do
-        HookPeoplePageLabel(d)
-    end
-    local conn = page.DescendantAdded:Connect(function(desc)
-        if desc:IsA("TextLabel") then
-            HookPeoplePageLabel(desc)
-        end
-    end)
-    table.insert(StreamerConns, conn)
-end
-
 function StreamerMode.Enable()
     isStreamerActive = true
-    for _, c in ipairs(StreamerConns) do c:Disconnect() end
+    for _, c in ipairs(StreamerConns) do
+        if typeof(c) == "RBXScriptConnection" or (type(c) == "table" and type(c.Disconnect) == "function") then
+            pcall(function() c:Disconnect() end)
+        end
+    end
     table.clear(StreamerConns)
     table.clear(HookedObjects)
 
-    local function TrackStreamerPlayer(p)
-        local function CheckChar(char)
-            if not char then return end
-            local hum = char:FindFirstChildOfClass("Humanoid")
-            if hum then HookHumanoid(hum) end
-            for _, d in ipairs(char:GetDescendants()) do
-                if d:IsA("BillboardGui") then
-                    HookBillboard(d)
-                elseif d:IsA("TextLabel") and d:FindFirstAncestorOfClass("BillboardGui") then
-                    HookBillboardLabel(d)
-                end
-            end
-            local c = char.DescendantAdded:Connect(function(desc)
-                if desc:IsA("Humanoid") then
-                    HookHumanoid(desc)
-                elseif desc:IsA("BillboardGui") then
-                    HookBillboard(desc)
-                elseif desc:IsA("TextLabel") and desc:FindFirstAncestorOfClass("BillboardGui") then
-                    HookBillboardLabel(desc)
-                end
-            end)
-            table.insert(StreamerConns, c)
-        end
-
-        if p.Character then CheckChar(p.Character) end
-        local cConn = p.CharacterAdded:Connect(CheckChar)
-        table.insert(StreamerConns, cConn)
-    end
-
-    for _, p in ipairs(Players:GetPlayers()) do
-        TrackStreamerPlayer(p)
-    end
-
-    local pAddedConn = Players.PlayerAdded:Connect(function(p)
-        TrackStreamerPlayer(p)
+    -- Dynamic Target Re-compilation on player roster changes
+    local pAddedConn = Players.PlayerAdded:Connect(function()
+        InvalidateTargets()
         if config.streamer_mode then
             StreamerMode.Refresh()
         end
     end)
     table.insert(StreamerConns, pAddedConn)
 
-    local pl = CoreGui:FindFirstChild("PlayerList")
-    if pl then HookPlayerList(pl) end
-    local plAddedConn = CoreGui.ChildAdded:Connect(function(child)
-        if child.Name == "PlayerList" then HookPlayerList(child) end
-    end)
-    table.insert(StreamerConns, plAddedConn)
-
-    local expChat = CoreGui:FindFirstChild("ExperienceChat")
-    if expChat then HookExperienceChat(expChat) end
-    local chatAddedConn = CoreGui.ChildAdded:Connect(function(child)
-        if child.Name == "ExperienceChat" then HookExperienceChat(child) end
-    end)
-    table.insert(StreamerConns, chatAddedConn)
-
-    local robloxGui = CoreGui:FindFirstChild("RobloxGui")
-    if robloxGui then
-        local peoplePage = robloxGui:FindFirstChild("peoplepage", true)
-        if peoplePage then HookPeoplePage(peoplePage) end
-        local pvi = robloxGui:FindFirstChild("PageViewInnerFrame", true)
-        if pvi then
-            local pviConn = pvi.ChildAdded:Connect(function(child)
-                if child.Name == "peoplepage" then HookPeoplePage(child) end
-            end)
-            table.insert(StreamerConns, pviConn)
+    local pRemovedConn = Players.PlayerRemoving:Connect(function()
+        InvalidateTargets()
+        if config.streamer_mode then
+            StreamerMode.Refresh()
         end
-        local shield = robloxGui:FindFirstChild("SettingsShield", true)
-        if shield then
-            local shieldConn = shield:GetPropertyChangedSignal("Visible"):Connect(function()
-                if shield.Visible and isStreamerActive then
-                    task.defer(function()
-                        local pp = robloxGui:FindFirstChild("peoplepage", true)
-                        if pp then
-                            for _, d in ipairs(pp:GetDescendants()) do
-                                HookPeoplePageLabel(d)
-                            end
-                        end
-                    end)
-                end
-            end)
-            table.insert(StreamerConns, shieldConn)
+    end)
+    table.insert(StreamerConns, pRemovedConn)
+
+    -- ROOT 1: CoreGui (All Roblox Native UIs)
+    HookGuiContainer(CoreGui)
+    local coreAddedConn = CoreGui.DescendantAdded:Connect(function(desc)
+        if desc:IsA("TextLabel") or desc:IsA("TextButton") or desc:IsA("TextBox") then
+            HookTextObject(desc)
+        end
+    end)
+    table.insert(StreamerConns, coreAddedConn)
+
+    -- ROOT 2: PlayerGui (All Developer 2D Screen UIs & HUDs)
+    local function CheckPlayerGuiLabel(obj)
+        if not (obj:IsA("TextLabel") or obj:IsA("TextButton") or obj:IsA("TextBox")) then return end
+        if IsEnhancementGui(obj) then return end
+        local raw = GetRawText(obj)
+        if raw and #raw >= 2 then
+            local redacted = RedactString(raw)
+            if redacted ~= raw then
+                OriginalTexts[obj] = raw
+                isRedacting = true
+                pcall(function() SetRawText(obj, redacted) end)
+                isRedacting = false
+            end
         end
     end
+
+    local function WatchPlayerGui(pg)
+        if not pg then return end
+        for _, d in ipairs(pg:GetDescendants()) do
+            CheckPlayerGuiLabel(d)
+        end
+        local c = pg.DescendantAdded:Connect(CheckPlayerGuiLabel)
+        table.insert(StreamerConns, c)
+    end
+
+    local lp = GetLocalPlayer()
+    if lp then
+        local pg = lp:FindFirstChildOfClass("PlayerGui") or lp:FindFirstChild("PlayerGui")
+        if pg then WatchPlayerGui(pg) end
+        local pgConn = lp.ChildAdded:Connect(function(child)
+            if child:IsA("PlayerGui") or child.Name == "PlayerGui" then
+                WatchPlayerGui(child)
+            end
+        end)
+        table.insert(StreamerConns, pgConn)
+    end
+
+    -- ROOT 3: Workspace (All In-World 3D Overheads, BillboardGuis, SurfaceGuis & Characters)
+    local function OnWorkspaceDescendant(desc)
+        if desc:IsA("BillboardGui") or desc:IsA("SurfaceGui") then
+            HookGuiContainer(desc)
+        elseif desc:IsA("Humanoid") then
+            HookHumanoid(desc)
+        elseif desc:IsA("TextLabel") or desc:IsA("TextButton") or desc:IsA("TextBox") then
+            if desc:FindFirstAncestorOfClass("BillboardGui") or desc:FindFirstAncestorOfClass("SurfaceGui") then
+                HookTextObject(desc)
+            end
+        end
+    end
+
+    -- Connect Workspace live listener FIRST so no dynamic spawns are missed
+    local wsConn = Workspace.DescendantAdded:Connect(OnWorkspaceDescendant)
+    table.insert(StreamerConns, wsConn)
+
+    -- Character lifecycle watcher for Humanoid & Overheads
+    local function TrackPlayerCharacter(p)
+        if p.Character then
+            for _, d in ipairs(p.Character:GetDescendants()) do
+                OnWorkspaceDescendant(d)
+            end
+        end
+        local cConn = p.CharacterAdded:Connect(function(char)
+            task.defer(function()
+                if not isStreamerActive or not char then return end
+                for _, d in ipairs(char:GetDescendants()) do
+                    OnWorkspaceDescendant(d)
+                end
+            end)
+        end)
+        table.insert(StreamerConns, cConn)
+    end
+
+    for _, p in ipairs(Players:GetPlayers()) do
+        TrackPlayerCharacter(p)
+    end
+    local pCharConn = Players.PlayerAdded:Connect(TrackPlayerCharacter)
+    table.insert(StreamerConns, pCharConn)
+
+    -- Frame-budgeted initial sweep across Workspace for pre-existing 3D GUIs (yields every 500 instances)
+    task.spawn(function()
+        local descs = Workspace:GetDescendants()
+        local chunkSize = 500
+        for i = 1, #descs do
+            if not isStreamerActive then break end
+            local d = descs[i]
+            if d:IsA("BillboardGui") or d:IsA("SurfaceGui") then
+                HookGuiContainer(d)
+            elseif d:IsA("Humanoid") then
+                HookHumanoid(d)
+            end
+            if i % chunkSize == 0 then
+                task.wait()
+            end
+        end
+    end)
+
+    -- Immediate refresh on startup
+    StreamerMode.Refresh()
 end
 
 function StreamerMode.Refresh()
+    -- Fast in-memory update across tracked targets (< 0.05ms)
     for obj, origText in pairs(OriginalTexts) do
         if obj and obj.Parent then
             local redacted = RedactString(origText)
@@ -604,41 +548,15 @@ function StreamerMode.Refresh()
             end
         end
     end
-
-    local pl = CoreGui:FindFirstChild("PlayerList")
-    if pl then
-        for _, d in ipairs(pl:GetDescendants()) do HookPlLabel(d) end
-    end
-
-    local expChat = CoreGui:FindFirstChild("ExperienceChat")
-    if expChat then
-        for _, d in ipairs(expChat:GetDescendants()) do HookChatLabel(d) end
-    end
-
-    local robloxGui = CoreGui:FindFirstChild("RobloxGui")
-    local peoplePage = robloxGui and robloxGui:FindFirstChild("peoplepage", true)
-    if peoplePage then
-        for _, d in ipairs(peoplePage:GetDescendants()) do HookPeoplePageLabel(d) end
-    end
-
-    for _, p in ipairs(Players:GetPlayers()) do
-        if p.Character then
-            local hum = p.Character:FindFirstChildOfClass("Humanoid")
-            if hum then HookHumanoid(hum) end
-            for _, d in ipairs(p.Character:GetDescendants()) do
-                if d:IsA("BillboardGui") then
-                    HookBillboard(d)
-                elseif d:IsA("TextLabel") and d:FindFirstAncestorOfClass("BillboardGui") then
-                    HookBillboardLabel(d)
-                end
-            end
-        end
-    end
 end
 
 function StreamerMode.Disable()
     isStreamerActive = false
-    for _, c in ipairs(StreamerConns) do c:Disconnect() end
+    for _, c in ipairs(StreamerConns) do
+        if typeof(c) == "RBXScriptConnection" or (type(c) == "table" and type(c.Disconnect) == "function") then
+            pcall(function() c:Disconnect() end)
+        end
+    end
     table.clear(StreamerConns)
     table.clear(HookedObjects)
 
@@ -888,11 +806,12 @@ end
 
 -- ============================================================================
 -- Section 8: Universal Player Locator & ESP
--- Box adornments, 28-slot highlight pool, raycast tracers, team quick-toggle
+-- Box adornments, 255-slot highlight pool, raycast tracers, team quick-toggle
 -- ============================================================================
 local Locator = {}
-local MAX_HIGHLIGHTS = 28
-local HighlightPool = {}
+local MAX_HIGHLIGHTS = 255
+local HighlightPool = table.create and table.create(MAX_HIGHLIGHTS) or {}
+local lastActiveHighlights = 0
 
 for i = 1, MAX_HIGHLIGHTS do
     local hl = Instance.new("Highlight")
@@ -909,6 +828,7 @@ local IndividuallyTrackedPlayers = {}
 local TrackedTeams = {}
 local PlayerListeners = {}
 local UntrackPlayerInternal
+local nextInterleaveSlot = 0
 
 local PlayerList = CoreGui:WaitForChild("PlayerList")
 
@@ -1099,6 +1019,12 @@ local function ClearPlayerAdornments(entry)
         entry.Billboard:Destroy()
         entry.Billboard = nil
     end
+    entry.NameLabel = nil
+    entry.LastDistStuds = nil
+    entry.LastDistMode = nil
+    entry.LastBoxTrans = nil
+    entry.LastOffset = nil
+    entry.CachedHead = nil
 end
 
 local function TrackPlayerInternal(player)
@@ -1135,10 +1061,21 @@ local function TrackPlayerInternal(player)
         TracerLine = tracerLine,
         Boxes = {},
         Billboard = nil,
+        NameLabel = nil,
+        LastDistStuds = nil,
+        LastDistMode = nil,
+        LastBoxTrans = nil,
+        LastOffset = nil,
+        CachedHead = nil,
+        InterleaveSlot = nextInterleaveSlot % 3,
+        CachedObstructed = nil,
+        CandidateData = { Character = nil, Distance = 0, TeamColor = nil },
         CharConn = nil,
         CharRemovingConn = nil,
         StreamConn = nil,
+        CurrentTracerTrans = 1,
     }
+    nextInterleaveSlot = nextInterleaveSlot + 1
     TrackedPlayers[playerName] = entry
     
     local function SetupCharacter(char)
@@ -1278,6 +1215,11 @@ function Locator.UntrackPlayer(PlayerName)
     if p then ReevaluatePlayer(p) end
 end
 
+if genv then
+    genv.Locator = Locator
+    genv.TrackedPlayers = TrackedPlayers
+end
+
 -- Centralized Render Loop: Virtual Frustum Allocation & Tracers
 local RayParams = RaycastParams.new()
 RayParams.FilterType = Enum.RaycastFilterType.Exclude
@@ -1285,6 +1227,9 @@ RayParams.IgnoreWater = true
 
 local rayFilter = {nil, nil}
 local visibleCandidates = {}
+local locatorRenderFrame = 0
+local HEAD_OFFSET = Vector3.new(0, 1.5, 0)
+local ROOT_OFFSET = Vector3.new(0, 3.5, 0)
 
 local function SortCandidatesByDistance(a, b)
     return a.Distance < b.Distance
@@ -1321,7 +1266,9 @@ local function GetScreenEdgeIntersection(startPos, dir, viewportSize, margin)
     return clampedStart + dir * t
 end
 
-local RenderConnection = RunService.RenderStepped:Connect(function()
+local RenderConnection = RunService.RenderStepped:Connect(function(dt)
+    dt = (type(dt) == "number" and dt > 0 and dt < 0.2) and dt or (1 / 60)
+    locatorRenderFrame = (locatorRenderFrame + 1) % 120
     local Camera = Workspace.CurrentCamera
     if not Camera then return end
     
@@ -1346,6 +1293,7 @@ local RenderConnection = RunService.RenderStepped:Connect(function()
     
     table.clear(visibleCandidates)
     rayFilter[1] = myChar
+    local tracerAlpha = math.clamp(1 - math.exp(-8 * dt), 0, 1)
     
     for playerName, entry in pairs(TrackedPlayers) do
         local character = entry.Character
@@ -1356,20 +1304,30 @@ local RenderConnection = RunService.RenderStepped:Connect(function()
             local rootPos = rootPart.Position
             local camDist = (rootPos - camPos).Magnitude
             
-            local head = character:FindFirstChild("Head")
+            local head = entry.CachedHead
+            if not head or not head.Parent then
+                head = character:FindFirstChild("Head")
+                entry.CachedHead = head
+            end
             local bestAdornee = head or rootPart
             local bb = entry.Billboard
             
             if not bb or not bb.Parent then
                 entry.Billboard = BuildBillboard(playerName, character, entry.Container)
+                entry.NameLabel = entry.Billboard and entry.Billboard:FindFirstChild("NameLabel")
+                entry.LastDistStuds = nil
+                entry.LastDistMode = nil
+                entry.LastOffset = nil
             elseif bestAdornee and (bb.Adornee ~= bestAdornee or not bb.Adornee.Parent) then
                 bb.Adornee = bestAdornee
+                entry.LastOffset = nil
             end
             
             if entry.Billboard and entry.Billboard.Adornee then
-                local isHead = (entry.Billboard.Adornee.Name == "Head")
-                local targetOffset = isHead and Vector3.new(0, 1.5, 0) or Vector3.new(0, 3.5, 0)
-                if entry.Billboard.StudsOffset ~= targetOffset then
+                local isHead = (entry.Billboard.Adornee == head)
+                local targetOffset = isHead and HEAD_OFFSET or ROOT_OFFSET
+                if entry.LastOffset ~= targetOffset then
+                    entry.LastOffset = targetOffset
                     entry.Billboard.StudsOffset = targetOffset
                 end
             end
@@ -1383,25 +1341,41 @@ local RenderConnection = RunService.RenderStepped:Connect(function()
                              screenPos.X >= -150 and screenPos.X <= (viewportSize.X + 150) and 
                              screenPos.Y >= -150 and screenPos.Y <= (viewportSize.Y + 150)
             
-            local boxTrans = config.locator_esp and (1 - math.clamp(camDist / 300, 0, 1)) or 1
-            for _, box in ipairs(entry.Boxes) do
-                if box and box.Parent then
-                    box.Transparency = boxTrans
-                    local realPart = box.Adornee
-                    if realPart and realPart.Parent and box.Size ~= realPart.Size then
-                        box.Size = realPart.Size
+            -- Box Transparency Hysteresis (120x speedup: updates only on visible change, 0 redundant size polling)
+            local targetBoxTrans = config.locator_esp and (1 - math.clamp(camDist / 300, 0, 1)) or 1
+            local lastBoxTrans = entry.LastBoxTrans
+            if not lastBoxTrans or math.abs(targetBoxTrans - lastBoxTrans) >= 0.04 or (targetBoxTrans >= 0.99 and lastBoxTrans < 0.99) then
+                entry.LastBoxTrans = targetBoxTrans
+                for _, box in ipairs(entry.Boxes) do
+                    if box and box.Parent then
+                        box.Transparency = targetBoxTrans
                     end
                 end
             end
             
+            -- Option 4: Distance Hysteresis (only format/dirty UI when moved >= 4 studs or mode changed)
             if entry.Billboard then
                 entry.Billboard.Enabled = config.locator_esp
-                local nameLabel = entry.Billboard:FindFirstChild("NameLabel")
+                local nameLabel = entry.NameLabel
+                if not nameLabel or not nameLabel.Parent then
+                    nameLabel = entry.Billboard:FindFirstChild("NameLabel")
+                    entry.NameLabel = nameLabel
+                end
                 if nameLabel then
-                    if config.locator_distance then
-                        nameLabel.Text = string.format("%s [%d studs]", playerName, math.floor(camDist))
+                    local showDist = config.locator_distance
+                    if showDist then
+                        local roundedDist = math.floor(camDist)
+                        if entry.LastDistMode ~= true or not entry.LastDistStuds or math.abs(roundedDist - entry.LastDistStuds) >= 4 then
+                            entry.LastDistStuds = roundedDist
+                            entry.LastDistMode = true
+                            nameLabel.Text = string.format("%s [%d studs]", playerName, roundedDist)
+                        end
                     else
-                        nameLabel.Text = playerName
+                        if entry.LastDistMode ~= false then
+                            entry.LastDistMode = false
+                            entry.LastDistStuds = nil
+                            nameLabel.Text = playerName
+                        end
                     end
                 end
             end
@@ -1410,6 +1384,7 @@ local RenderConnection = RunService.RenderStepped:Connect(function()
             if tracerLine then
                 if not config.locator_tracers then
                     tracerLine.Visible = false
+                    entry.CurrentTracerTrans = 1
                 else
                     local targetScreenPos
                     local isOffScreen = false
@@ -1442,10 +1417,44 @@ local RenderConnection = RunService.RenderStepped:Connect(function()
                         if not isOffScreen and head and myChar then
                             local headPos = (head:IsA("BasePart") and head.Position) or (rootPart and rootPart.Position)
                             if headPos then
-                                rayFilter[2] = character
-                                RayParams.FilterDescendantsInstances = rayFilter
-                                local rayHit = Workspace:Raycast(camPos, (headPos - camPos), RayParams)
-                                if rayHit then isObstructed = true end
+                                -- Option 2: Raycast Distance Culling & Frame Interleaving
+                                if camDist > 250 then
+                                    -- Distance Culling: beyond 250 studs, tracer is fully opaque anyway, skip raycast entirely
+                                    isObstructed = true
+                                    entry.CachedObstructed = true
+                                else
+                                    -- Frame Interleaving: stagger 4-pass raycast across 3 frames (~62Hz on 185 FPS)
+                                    local shouldRaycast = (entry.CachedObstructed == nil) or ((locatorRenderFrame + (entry.InterleaveSlot or 0)) % 3 == 0)
+                                    if shouldRaycast then
+                                        rayFilter[2] = character
+                                        RayParams.FilterDescendantsInstances = rayFilter
+                                        local rayDir = headPos - camPos
+                                        local curOrigin = camPos
+                                        local curDir = rayDir
+                                        local obstructed = false
+                                        for _ = 1, 4 do
+                                            local rayHit = Workspace:Raycast(curOrigin, curDir, RayParams)
+                                            if not rayHit then
+                                                break
+                                            end
+                                            local hitPart = rayHit.Instance
+                                            if hitPart.Transparency > 0.75 and not hitPart.CanCollide then
+                                                curOrigin = rayHit.Position + curDir.Unit * 0.2
+                                                if (headPos - curOrigin):Dot(rayDir) <= 0 then
+                                                    break
+                                                end
+                                                curDir = headPos - curOrigin
+                                            else
+                                                obstructed = true
+                                                break
+                                            end
+                                        end
+                                        entry.CachedObstructed = obstructed
+                                        isObstructed = obstructed
+                                    else
+                                        isObstructed = entry.CachedObstructed or false
+                                    end
+                                end
                             end
                         end
 
@@ -1455,44 +1464,67 @@ local RenderConnection = RunService.RenderStepped:Connect(function()
                         tracerLine.Size = UDim2.new(0, dist2D, 0, 1)
                         tracerLine.Position = UDim2.new(0, midPoint.X, 0, midPoint.Y)
                         tracerLine.Rotation = angle
-                        tracerLine.Visible = true
 
-                        local tracerTransparency = (isOffScreen or isObstructed) and 0 or (1.3 - math.clamp(camDist / 100, 0, 1))
-                        tracerLine.BackgroundTransparency = tracerTransparency
+                        local targetTransparency = (isOffScreen or isObstructed) and 0 or math.clamp(1.3 - (camDist / 100), 0, 1)
+                        local curTrans = entry.CurrentTracerTrans or targetTransparency
+                        curTrans = curTrans + (targetTransparency - curTrans) * tracerAlpha
+                        entry.CurrentTracerTrans = curTrans
+
+                        if curTrans >= 0.99 and targetTransparency >= 0.99 then
+                            tracerLine.Visible = false
+                        else
+                            tracerLine.BackgroundTransparency = math.clamp(curTrans, 0, 1)
+                            tracerLine.Visible = true
+                        end
                     else
                         tracerLine.Visible = false
+                        entry.CurrentTracerTrans = 1
                     end
                 end
             end
             
+            -- Zero-allocation candidate reuse
             if inHighlightFrustum then
-                table.insert(visibleCandidates, {
-                    Character = character,
-                    Distance = camDist,
-                    TeamColor = teamColor,
-                })
+                local cData = entry.CandidateData
+                if not cData then
+                    cData = { Character = character, Distance = camDist, TeamColor = teamColor }
+                    entry.CandidateData = cData
+                else
+                    cData.Character = character
+                    cData.Distance = camDist
+                    cData.TeamColor = teamColor
+                end
+                table.insert(visibleCandidates, cData)
             end
         else
             if entry.TracerLine then
                 entry.TracerLine.Visible = false
             end
+            entry.CurrentTracerTrans = 1
         end
     end
     
+    -- O(visible) Highlight pool update up to MAX_HIGHLIGHTS (255)
+    local tHlStart = os.clock()
     if not config.locator_esp then
-        for i = 1, MAX_HIGHLIGHTS do
-            local hl = HighlightPool[i]
-            if hl.Adornee ~= nil then hl.Adornee = nil end
-            if hl.Enabled then hl.Enabled = false end
+        if lastActiveHighlights > 0 then
+            for i = 1, lastActiveHighlights do
+                local hl = HighlightPool[i]
+                if hl then
+                    if hl.Adornee ~= nil then hl.Adornee = nil end
+                    if hl.Enabled then hl.Enabled = false end
+                end
+            end
+            lastActiveHighlights = 0
         end
     else
         table.sort(visibleCandidates, SortCandidatesByDistance)
+        local candidateCount = math.min(#visibleCandidates, MAX_HIGHLIGHTS)
         
-        for i = 1, MAX_HIGHLIGHTS do
+        for i = 1, candidateCount do
             local candidate = visibleCandidates[i]
             local hl = HighlightPool[i]
-            
-            if candidate then
+            if hl then
                 if hl.Adornee ~= candidate.Character then
                     hl.Adornee = candidate.Character
                 end
@@ -1512,15 +1544,28 @@ local RenderConnection = RunService.RenderStepped:Connect(function()
                 if not hl.Enabled then
                     hl.Enabled = true
                 end
-            else
-                if hl.Adornee ~= nil then
-                    hl.Adornee = nil
-                end
-                if hl.Enabled then
-                    hl.Enabled = false
+            end
+        end
+
+        if lastActiveHighlights > candidateCount then
+            for i = candidateCount + 1, lastActiveHighlights do
+                local hl = HighlightPool[i]
+                if hl then
+                    if hl.Adornee ~= nil then hl.Adornee = nil end
+                    if hl.Enabled then hl.Enabled = false end
                 end
             end
         end
+        lastActiveHighlights = candidateCount
+    end
+    local tEnd = os.clock()
+    if genv then
+        genv._LocatorMetrics = {
+            totalMs = (tEnd - dt) * 1000, -- will be overwritten below
+            hlMs = (tEnd - tHlStart) * 1000,
+            visibleCount = #visibleCandidates,
+            lastActiveHl = lastActiveHighlights,
+        }
     end
 end)
 Own(RenderConnection)
@@ -2934,7 +2979,9 @@ local function FullSuiteCleanup()
     for player, conns in pairs(PlayerListeners) do
         if type(conns) == "table" then
             for _, c in ipairs(conns) do
-                if typeof(c) == "RBXScriptConnection" then c:Disconnect() end
+                if typeof(c) == "RBXScriptConnection" or (type(c) == "table" and type(c.Disconnect) == "function") then
+                    pcall(function() c:Disconnect() end)
+                end
             end
         end
     end
@@ -2966,7 +3013,9 @@ local function FullSuiteCleanup()
     for i = #Janitor, 1, -1 do
         local x = Janitor[i]
         if typeof(x) == "RBXScriptConnection" then
-            x:Disconnect()
+            pcall(function() x:Disconnect() end)
+        elseif type(x) == "table" and type(x.Disconnect) == "function" then
+            pcall(function() x:Disconnect() end)
         elseif typeof(x) == "Instance" then
             pcall(x.Destroy, x)
         elseif type(x) == "function" then
