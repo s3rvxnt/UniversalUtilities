@@ -1,10 +1,12 @@
+--!stage GameLoaded
+--!priority 120
 -- ============================================================================
 -- RobloxEnhancement.lua
 -- Comprehensive In-Game Enhancement Suite for Roblox
 -- Features:
 --   1. Streamer Mode (Visual-only display/username/ID spoofing & overhead redaction)
 --   2. Personal Space Bubble (Smooth distance falloff + temporal lerp fade + 10-step drag & slide slider)
---   3. Universal Player Locator & ESP (Box adornments, 28-slot highlight pool, raycast tracers, team quick-toggle)
+--   3. Universal Player Locator & ESP (Box adornments, on-demand highlight pool up to 255, raycast tracers, team quick-toggle)
 --   4. Leaderboard Context Tools (Track/Untrack button, animated 2x2 accordion copy panel for ID/Profile/Names)
 --   5. Chat Enhancements (Timestamp prefixes, username/display name mention audio chimes)
 --   6. Anti-AFK (Inactivity kick prevention)
@@ -66,6 +68,10 @@ local CONFIG_FILE = "roblox_enhancement_config.json"
 local config = {
     streamer_mode = true,
     personal_space_bubble = 0,
+    crowd_optimizer = false,
+    crowd_shadows = true,
+    crowd_anim_lod = true,
+    crowd_face_controls = true,
     chat_timestamps = true,
     mention_chimes = true,
     anti_afk = true,
@@ -806,22 +812,69 @@ end
 
 -- ============================================================================
 -- Section 8: Universal Player Locator & ESP
--- Box adornments, 255-slot highlight pool, raycast tracers, team quick-toggle
+-- Box adornments, on-demand dynamic highlight pool (up to 255), raycast tracers, team quick-toggle
 -- ============================================================================
 local Locator = {}
-local MAX_HIGHLIGHTS = 255
-local HighlightPool = table.create and table.create(MAX_HIGHLIGHTS) or {}
+local HighlightPool = {}
 local lastActiveHighlights = 0
 
-for i = 1, MAX_HIGHLIGHTS do
-    local hl = Instance.new("Highlight")
-    hl.Name = "VirtualHighlight_" .. i
-    hl.FillTransparency = 0
-    hl.OutlineTransparency = 0
-    hl.Enabled = false
-    hl.Parent = CoreGui
-    HighlightPool[i] = Own(hl)
+local function GetPooledHighlight(i)
+    local hl = HighlightPool[i]
+    if not hl then
+        hl = Instance.new("Highlight")
+        hl.Name = "VirtualHighlight_" .. i
+        hl.FillTransparency = 0
+        hl.OutlineTransparency = 0
+        hl.Enabled = false
+        hl.Parent = nil
+        HighlightPool[i] = Own(hl)
+    end
+    return hl
 end
+
+-- ============================================================================
+-- Native Game Highlight Budget Monitor (Dynamic 255-slot governor)
+-- Real-time tracking of non-enhancement highlights in Workspace and CoreGui
+-- ============================================================================
+local TOTAL_ENGINE_HIGHLIGHT_CAP = 255
+local nativeHighlights = setmetatable({}, { __mode = "k" })
+local nativeHighlightCount = 0
+
+local function RegisterNativeHighlight(hl)
+    if not hl or not hl:IsA("Highlight") then return end
+    if hl.Name:sub(1, 16) == "VirtualHighlight" then return end
+    if not nativeHighlights[hl] then
+        nativeHighlights[hl] = true
+        nativeHighlightCount = nativeHighlightCount + 1
+    end
+end
+
+local function UnregisterNativeHighlight(hl)
+    if not hl or not hl:IsA("Highlight") then return end
+    if nativeHighlights[hl] then
+        nativeHighlights[hl] = nil
+        nativeHighlightCount = math.max(0, nativeHighlightCount - 1)
+    end
+end
+
+Own(Workspace.DescendantAdded:Connect(RegisterNativeHighlight))
+Own(Workspace.DescendantRemoving:Connect(UnregisterNativeHighlight))
+Own(CoreGui.DescendantAdded:Connect(RegisterNativeHighlight))
+Own(CoreGui.DescendantRemoving:Connect(UnregisterNativeHighlight))
+
+task.spawn(function()
+    local descs = Workspace:GetDescendants()
+    local chunkSize = 500
+    for i = 1, #descs do
+        local d = descs[i]
+        if d:IsA("Highlight") then
+            RegisterNativeHighlight(d)
+        end
+        if i % chunkSize == 0 then
+            task.wait()
+        end
+    end
+end)
 
 local TrackedPlayers = {}
 local IndividuallyTrackedPlayers = {}
@@ -830,9 +883,13 @@ local PlayerListeners = {}
 local UntrackPlayerInternal
 local nextInterleaveSlot = 0
 
-local PlayerList = CoreGui:WaitForChild("PlayerList")
+local PlayerList = CoreGui:FindFirstChild("PlayerList")
 
 local function GetActualList()
+    if not PlayerList then
+        PlayerList = CoreGui:FindFirstChild("PlayerList")
+        if not PlayerList then return nil end
+    end
     local actualList = PlayerList:FindFirstChild("OffsetUndoFrame", true)
     if actualList then return actualList end
     
@@ -1231,7 +1288,12 @@ local locatorRenderFrame = 0
 local HEAD_OFFSET = Vector3.new(0, 1.5, 0)
 local ROOT_OFFSET = Vector3.new(0, 3.5, 0)
 
-local function SortCandidatesByDistance(a, b)
+local function SortCandidatesByPriority(a, b)
+    -- Priority 1: On-screen candidates get strict priority over off-screen / peripheral candidates
+    if a.OnScreen ~= b.OnScreen then
+        return a.OnScreen == true
+    end
+    -- Priority 2: Closer candidates get priority over further candidates (furthest get dropped first)
     return a.Distance < b.Distance
 end
 
@@ -1483,19 +1545,18 @@ local RenderConnection = RunService.RenderStepped:Connect(function(dt)
                 end
             end
             
-            -- Zero-allocation candidate reuse
-            if inHighlightFrustum then
-                local cData = entry.CandidateData
-                if not cData then
-                    cData = { Character = character, Distance = camDist, TeamColor = teamColor }
-                    entry.CandidateData = cData
-                else
-                    cData.Character = character
-                    cData.Distance = camDist
-                    cData.TeamColor = teamColor
-                end
-                table.insert(visibleCandidates, cData)
+            -- Zero-allocation candidate reuse (all valid tracked characters)
+            local cData = entry.CandidateData
+            if not cData then
+                cData = { Character = character, Distance = camDist, TeamColor = teamColor, OnScreen = onScreen }
+                entry.CandidateData = cData
+            else
+                cData.Character = character
+                cData.Distance = camDist
+                cData.TeamColor = teamColor
+                cData.OnScreen = onScreen
             end
+            table.insert(visibleCandidates, cData)
         else
             if entry.TracerLine then
                 entry.TracerLine.Visible = false
@@ -1504,7 +1565,7 @@ local RenderConnection = RunService.RenderStepped:Connect(function(dt)
         end
     end
     
-    -- O(visible) Highlight pool update up to MAX_HIGHLIGHTS (255)
+    -- Adaptive Highlight pool update with dynamic game budget headroom
     local tHlStart = os.clock()
     if not config.locator_esp then
         if lastActiveHighlights > 0 then
@@ -1513,17 +1574,19 @@ local RenderConnection = RunService.RenderStepped:Connect(function(dt)
                 if hl then
                     if hl.Adornee ~= nil then hl.Adornee = nil end
                     if hl.Enabled then hl.Enabled = false end
+                    if hl.Parent ~= nil then hl.Parent = nil end
                 end
             end
             lastActiveHighlights = 0
         end
     else
-        table.sort(visibleCandidates, SortCandidatesByDistance)
-        local candidateCount = math.min(#visibleCandidates, MAX_HIGHLIGHTS)
+        table.sort(visibleCandidates, SortCandidatesByPriority)
+        local availableSlots = math.max(0, TOTAL_ENGINE_HIGHLIGHT_CAP - nativeHighlightCount)
+        local candidateCount = math.min(#visibleCandidates, availableSlots)
         
         for i = 1, candidateCount do
             local candidate = visibleCandidates[i]
-            local hl = HighlightPool[i]
+            local hl = GetPooledHighlight(i)
             if hl then
                 if hl.Adornee ~= candidate.Character then
                     hl.Adornee = candidate.Character
@@ -1541,6 +1604,9 @@ local RenderConnection = RunService.RenderStepped:Connect(function(dt)
                     hl.OutlineColor = outlineColor
                 end
                 
+                if hl.Parent ~= CoreGui then
+                    hl.Parent = CoreGui
+                end
                 if not hl.Enabled then
                     hl.Enabled = true
                 end
@@ -1553,6 +1619,7 @@ local RenderConnection = RunService.RenderStepped:Connect(function(dt)
                 if hl then
                     if hl.Adornee ~= nil then hl.Adornee = nil end
                     if hl.Enabled then hl.Enabled = false end
+                    if hl.Parent ~= nil then hl.Parent = nil end
                 end
             end
         end
@@ -1565,6 +1632,8 @@ local RenderConnection = RunService.RenderStepped:Connect(function(dt)
             hlMs = (tEnd - tHlStart) * 1000,
             visibleCount = #visibleCandidates,
             lastActiveHl = lastActiveHighlights,
+            nativeHl = nativeHighlightCount,
+            availableSlots = math.max(0, TOTAL_ENGINE_HIGHLIGHT_CAP - nativeHighlightCount),
         }
     end
 end)
@@ -2125,8 +2194,8 @@ end
 
 local function Modification2()
     local ActualList = GetActualList()
-    if not ActualList then
-        local found = PlayerList:WaitForChild("OffsetUndoFrame", 10)
+    if not ActualList and PlayerList then
+        local found = PlayerList:WaitForChild("OffsetUndoFrame", 3)
         ActualList = found or GetActualList()
     end
     if not ActualList then return end
@@ -2184,15 +2253,310 @@ local function Modification2()
 end
 
 local function RunStartup()
+    if not PlayerList then return end
     local children = PlayerList:FindFirstChild("Children")
     if not children then return end
     task.spawn(Modification2)
 end
 
-Own(PlayerList.ChildAdded:Connect(function(child)
-    if child.Name == "Children" then RunStartup() end
-end))
-if PlayerList:FindFirstChild("Children") then RunStartup() end
+local function HookPlayerList(pl)
+    if not pl then return end
+    PlayerList = pl
+    Own(PlayerList.ChildAdded:Connect(function(child)
+        if child.Name == "Children" then RunStartup() end
+    end))
+    if PlayerList:FindFirstChild("Children") then
+        RunStartup()
+    end
+end
+
+if PlayerList then
+    HookPlayerList(PlayerList)
+else
+    task.spawn(function()
+        local pl = CoreGui:WaitForChild("PlayerList", 5)
+        if pl then
+            HookPlayerList(pl)
+        else
+            local conn
+            conn = CoreGui.ChildAdded:Connect(function(child)
+                if child.Name == "PlayerList" then
+                    conn:Disconnect()
+                    HookPlayerList(child)
+                end
+            end)
+            Own(conn)
+        end
+    end)
+end
+
+-- ============================================================================
+-- Section 9.5: Crowd Optimizer Engine
+-- High-Performance Crowd Rendering Optimization Suite
+-- Eliminates dynamic shadow passes, blendshape morph solvers, and distant animation stepping.
+-- ============================================================================
+local CrowdOptimizer = {}
+local isCrowdActive = false
+local crowdConns = {}
+local storedFaceControls = {}      -- [FaceControls] = parentHead
+local pausedAnimators = {}         -- [Animator] = true
+
+local function TrackCrowdConn(c)
+    table.insert(crowdConns, c)
+    return c
+end
+
+-- 1. Avatar Shadow Culling
+local function ApplyShadowsToChar(char, enableCulling)
+    if not char then return end
+    for _, desc in ipairs(char:GetDescendants()) do
+        if desc:IsA("BasePart") then
+            desc.CastShadow = not enableCulling
+        end
+    end
+end
+
+-- 2. Facial Morph Culling (FaceControls)
+local function ApplyFaceControlsToChar(char, enableCulling)
+    if not char then return end
+    for _, desc in ipairs(char:GetDescendants()) do
+        if desc:IsA("FaceControls") then
+            if enableCulling then
+                if desc.Parent then
+                    storedFaceControls[desc] = desc.Parent
+                    desc.Parent = nil
+                end
+            else
+                local head = storedFaceControls[desc]
+                if head and head:IsDescendantOf(game) then
+                    pcall(function() desc.Parent = head end)
+                end
+                storedFaceControls[desc] = nil
+            end
+        end
+    end
+end
+
+-- 3. Animation Distance LOD & Stationary Pose Optimizer
+local function ResumeAnimator(anim)
+    if not anim then return end
+    pausedAnimators[anim] = nil
+    pcall(function()
+        for _, track in ipairs(anim:GetPlayingAnimationTracks()) do
+            track:AdjustSpeed(1)
+        end
+    end)
+end
+
+local function ResumeAllAnimators()
+    for anim, _ in pairs(pausedAnimators) do
+        if anim:IsDescendantOf(game) then
+            pcall(function()
+                for _, track in ipairs(anim:GetPlayingAnimationTracks()) do
+                    track:AdjustSpeed(1)
+                end
+            end)
+        end
+    end
+    table.clear(pausedAnimators)
+end
+
+local function StepAnimationLOD()
+    if not isCrowdActive or not config.crowd_anim_lod then
+        if next(pausedAnimators) ~= nil then
+            ResumeAllAnimators()
+        end
+        return
+    end
+
+    local cam = Workspace.CurrentCamera
+    local camPos = cam and cam.CFrame.Position
+    if not camPos then return end
+
+    local localChar = LocalPlayer.Character
+    local localPos = (localChar and localChar.PrimaryPart and localChar.PrimaryPart.Position) or camPos
+
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LocalPlayer and p.Character then
+            local char = p.Character
+            local root = char.PrimaryPart or char:FindFirstChild("HumanoidRootPart")
+            if root then
+                local dist = (root.Position - localPos).Magnitude
+                local vel = root.AssemblyLinearVelocity.Magnitude
+                local anim = char:FindFirstChildWhichIsA("Animator", true)
+                if anim then
+                    local shouldPause = (dist > 50) and (vel < 0.5)
+                    local isPaused = pausedAnimators[anim]
+
+                    if shouldPause and not isPaused then
+                        pausedAnimators[anim] = true
+                        pcall(function()
+                            for _, track in ipairs(anim:GetPlayingAnimationTracks()) do
+                                track:AdjustSpeed(0)
+                            end
+                        end)
+                    elseif not shouldPause and isPaused then
+                        ResumeAnimator(anim)
+                    end
+                end
+            end
+        end
+    end
+end
+
+-- Hook Player & Character Lifecycle
+local function HookCrowdCharacter(player, char)
+    if not char or player == LocalPlayer then return end
+
+    local cullShadows = isCrowdActive and config.crowd_shadows
+    local cullFace = isCrowdActive and config.crowd_face_controls
+
+    if cullShadows then
+        ApplyShadowsToChar(char, true)
+    end
+    if cullFace then
+        ApplyFaceControlsToChar(char, true)
+    end
+
+    TrackCrowdConn(char.DescendantAdded:Connect(function(desc)
+        if not isCrowdActive then return end
+        if config.crowd_shadows and desc:IsA("BasePart") then
+            desc.CastShadow = false
+        elseif config.crowd_face_controls and desc:IsA("FaceControls") and desc.Parent then
+            storedFaceControls[desc] = desc.Parent
+            desc.Parent = nil
+        end
+    end))
+
+    local anim = char:FindFirstChildWhichIsA("Animator", true)
+    if anim then
+        TrackCrowdConn(anim.AnimationPlayed:Connect(function(track)
+            if pausedAnimators[anim] then
+                ResumeAnimator(anim)
+            end
+        end))
+    end
+end
+
+local function HookCrowdPlayer(player)
+    if player == LocalPlayer then return end
+    if player.Character then
+        HookCrowdCharacter(player, player.Character)
+    end
+    TrackCrowdConn(player.CharacterAdded:Connect(function(char)
+        HookCrowdCharacter(player, char)
+    end))
+end
+
+local animLodThread = nil
+
+local function DisconnectCrowdConn(c)
+    if not c then return end
+    if typeof(c) == "RBXScriptConnection" then
+        pcall(function() c:Disconnect() end)
+    elseif type(c) == "table" and type(c.Disconnect) == "function" then
+        pcall(function() c:Disconnect() end)
+    end
+end
+
+local function ClearCrowdConns()
+    if animLodThread then
+        pcall(task.cancel, animLodThread)
+        animLodThread = nil
+    end
+    for _, c in ipairs(crowdConns) do
+        DisconnectCrowdConn(c)
+    end
+    table.clear(crowdConns)
+end
+
+local function EnsureAnimLodThread()
+    if isCrowdActive and config.crowd_anim_lod then
+        if not animLodThread then
+            animLodThread = task.spawn(function()
+                while isCrowdActive and config.crowd_anim_lod do
+                    task.wait(0.25)
+                    if not isCrowdActive or not config.crowd_anim_lod then break end
+                    StepAnimationLOD()
+                end
+                animLodThread = nil
+            end)
+        end
+    else
+        if animLodThread then
+            pcall(task.cancel, animLodThread)
+            animLodThread = nil
+        end
+    end
+end
+
+function CrowdOptimizer.Update()
+    if not isCrowdActive then return end
+
+    local cullShadows = config.crowd_shadows
+    local cullFace = config.crowd_face_controls
+    local cullAnim = config.crowd_anim_lod
+
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LocalPlayer and p.Character then
+            ApplyShadowsToChar(p.Character, cullShadows)
+            ApplyFaceControlsToChar(p.Character, cullFace)
+            if not cullAnim then
+                local anim = p.Character:FindFirstChildWhichIsA("Animator", true)
+                if anim and pausedAnimators[anim] then
+                    ResumeAnimator(anim)
+                end
+            end
+        end
+    end
+
+    EnsureAnimLodThread()
+end
+
+function CrowdOptimizer.Enable()
+    if isCrowdActive then
+        CrowdOptimizer.Update()
+        return
+    end
+    isCrowdActive = true
+
+    ClearCrowdConns()
+
+    for _, p in ipairs(Players:GetPlayers()) do
+        HookCrowdPlayer(p)
+    end
+    TrackCrowdConn(Players.PlayerAdded:Connect(HookCrowdPlayer))
+
+    EnsureAnimLodThread()
+    CrowdOptimizer.Update()
+end
+
+function CrowdOptimizer.Disable()
+    if not isCrowdActive then return end
+    isCrowdActive = false
+
+    ClearCrowdConns()
+
+    -- 1. Restore shadows
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LocalPlayer and p.Character then
+            ApplyShadowsToChar(p.Character, false)
+        end
+    end
+
+    -- 2. Restore FaceControls
+    for fc, head in pairs(storedFaceControls) do
+        if typeof(fc) == "Instance" and typeof(head) == "Instance" and head:IsDescendantOf(game) then
+            pcall(function() fc.Parent = head end)
+        end
+    end
+    table.clear(storedFaceControls)
+
+    -- 3. Resume Animators
+    ResumeAllAnimators()
+end
+
+Own(CrowdOptimizer.Disable)
 
 -- ============================================================================
 -- Section 10: In-Game ESC Menu Settings Injection
@@ -2337,7 +2701,7 @@ local function InjectEnhancementSettings(page)
     end
 
     -- 3. Toggle Row Builder
-    local function CreateToggleRow(id, labelText, defaultVal, callback, layoutOrder)
+    local function CreateToggleRow(id, labelText, defaultVal, callback, layoutOrder, isSubRow)
         local row
         if nativeRow and nativeRow:FindFirstChild("Selector") then
             row = nativeRow:Clone()
@@ -2345,10 +2709,13 @@ local function InjectEnhancementSettings(page)
             if lbl then
                 lbl.Name = id .. "Label"
                 lbl.Text = labelText
-                lbl.TextSize = 17
+                lbl.TextSize = isSubRow and 15 or 17
                 pcall(function() lbl.Font = Enum.Font.BuilderSansMedium end)
                 if lbl.Font ~= Enum.Font.BuilderSansMedium then lbl.Font = Enum.Font.GothamMedium end
-                lbl.TextColor3 = Color3.fromRGB(255, 255, 255)
+                lbl.TextColor3 = isSubRow and Color3.fromRGB(205, 210, 220) or Color3.fromRGB(255, 255, 255)
+                if isSubRow then
+                    lbl.Position = UDim2.new(0, 30, 0, 0)
+                end
             end
 
             local selector = row:FindFirstChild("Selector")
@@ -2452,12 +2819,12 @@ local function InjectEnhancementSettings(page)
 
             local lbl = Instance.new("TextLabel")
             lbl.Size = UDim2.new(0.45, -20, 1, 0)
-            lbl.Position = UDim2.new(0, 10, 0, 0)
+            lbl.Position = isSubRow and UDim2.new(0, 30, 0, 0) or UDim2.new(0, 10, 0, 0)
             lbl.BackgroundTransparency = 1
             pcall(function() lbl.Font = Enum.Font.BuilderSansMedium end)
             if lbl.Font ~= Enum.Font.BuilderSansMedium then lbl.Font = Enum.Font.Gotham end
-            lbl.TextSize = 16
-            lbl.TextColor3 = Color3.fromRGB(240, 240, 245)
+            lbl.TextSize = isSubRow and 14 or 16
+            lbl.TextColor3 = isSubRow and Color3.fromRGB(205, 210, 220) or Color3.fromRGB(240, 240, 245)
             lbl.TextXAlignment = Enum.TextXAlignment.Left
             lbl.Text = labelText
             lbl.Parent = row
@@ -2493,6 +2860,7 @@ local function InjectEnhancementSettings(page)
             TrackConn(statusLbl.Activated:Connect(OnToggle))
         end
 
+        row.ClipsDescendants = true
         ApplyNativeRowHover(row)
         row.Name = "Enhancement_Row_" .. id
         row.LayoutOrder = layoutOrder
@@ -2780,31 +3148,93 @@ local function InjectEnhancementSettings(page)
         if val > 0 then PersonalSpaceBubble.Enable() else PersonalSpaceBubble.Disable() end
     end, -89)
 
+    local subRows = {}
+    local function SetAccordionExpanded(expanded, animate)
+        for _, subRow in ipairs(subRows) do
+            if animate then
+                if expanded then
+                    subRow.Visible = true
+                    subRow.Size = UDim2.new(1, 0, 0, 0)
+                    TweenService:Create(subRow, TweenInfo.new(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+                        Size = UDim2.new(1, 0, 0, 50)
+                    }):Play()
+                else
+                    local tween = TweenService:Create(subRow, TweenInfo.new(0.15, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
+                        Size = UDim2.new(1, 0, 0, 0)
+                    })
+                    tween:Play()
+                    task.delay(0.15, function()
+                        if not config.crowd_optimizer then
+                            subRow.Visible = false
+                        end
+                    end)
+                end
+            else
+                subRow.Visible = expanded
+                subRow.Size = expanded and UDim2.new(1, 0, 0, 50) or UDim2.new(1, 0, 0, 0)
+            end
+        end
+    end
+
+    CreateToggleRow("CrowdOptimizer", "Crowd Optimizer", config.crowd_optimizer, function(val)
+        config.crowd_optimizer = val
+        SaveConfig()
+        SetAccordionExpanded(val, true)
+        if val then
+            CrowdOptimizer.Enable()
+        else
+            CrowdOptimizer.Disable()
+        end
+    end, -88)
+
+    local subRowShadows = CreateToggleRow("CrowdShadows", "  ↳ Avatar Shadow Culling", config.crowd_shadows, function(val)
+        config.crowd_shadows = val
+        SaveConfig()
+        CrowdOptimizer.Update()
+    end, -87, true)
+    table.insert(subRows, subRowShadows)
+
+    local subRowAnimLod = CreateToggleRow("CrowdAnimLod", "  ↳ Animation Distance LOD", config.crowd_anim_lod, function(val)
+        config.crowd_anim_lod = val
+        SaveConfig()
+        CrowdOptimizer.Update()
+    end, -86, true)
+    table.insert(subRows, subRowAnimLod)
+
+    local subRowFaceControls = CreateToggleRow("CrowdFaceControls", "  ↳ Facial Morph Culling", config.crowd_face_controls, function(val)
+        config.crowd_face_controls = val
+        SaveConfig()
+        CrowdOptimizer.Update()
+    end, -85, true)
+    table.insert(subRows, subRowFaceControls)
+
+    SetAccordionExpanded(config.crowd_optimizer, false)
+
     CreateToggleRow("LocatorTracers", "Locator Tracers", config.locator_tracers, function(val)
         config.locator_tracers = val
         SaveConfig()
-    end, -88)
+    end, -84)
 
     CreateToggleRow("LocatorDistance", "Distance Readouts", config.locator_distance, function(val)
         config.locator_distance = val
         SaveConfig()
-    end, -87)
+    end, -83)
 
     CreateToggleRow("ChatTimestamps", "Chat Timestamps", config.chat_timestamps, function(val)
         config.chat_timestamps = val
         SaveConfig()
-    end, -86)
+    end, -82)
 
     CreateToggleRow("MentionChimes", "Mention Chimes", config.mention_chimes, function(val)
         config.mention_chimes = val
         SaveConfig()
-    end, -85)
+    end, -81)
 
     CreateToggleRow("AntiAFK", "Anti-AFK", config.anti_afk, function(val)
         config.anti_afk = val
         SaveConfig()
         if val then AntiAFK.Enable() else AntiAFK.Disable() end
-    end, -84)
+    end, -80)
 
     -- Divider
     local modDivider = Instance.new("Frame")
@@ -2826,7 +3256,11 @@ local function InjectEnhancementSettings(page)
 
     local function CleanupMenu()
         for _, c in ipairs(menuConns) do
-            if typeof(c) == "RBXScriptConnection" then c:Disconnect() end
+            if typeof(c) == "RBXScriptConnection" then
+                pcall(function() c:Disconnect() end)
+            elseif type(c) == "table" and type(c.Disconnect) == "function" then
+                pcall(function() c:Disconnect() end)
+            end
         end
         table.clear(menuConns)
         for _, child in ipairs(page:GetChildren()) do
@@ -2942,6 +3376,12 @@ local function SyncWithSystems()
     else
         AntiAFK.Disable()
     end
+
+    if config.crowd_optimizer then
+        CrowdOptimizer.Enable()
+    else
+        CrowdOptimizer.Disable()
+    end
 end
 
 SyncWithSystems()
@@ -2968,7 +3408,12 @@ local function FullSuiteCleanup()
         pcall(AntiAFK.Disable)
     end
 
-    -- 4. Locator Cleanup
+    -- 4. Crowd Optimizer Cleanup
+    if CrowdOptimizer and CrowdOptimizer.Disable then
+        pcall(CrowdOptimizer.Disable)
+    end
+
+    -- 5. Locator Cleanup
     for pName, _ in pairs(TrackedPlayers) do
         pcall(UntrackPlayerInternal, pName)
     end
@@ -2987,7 +3432,7 @@ local function FullSuiteCleanup()
     end
     table.clear(PlayerListeners)
 
-    -- 5. Leaderboard Cleanup
+    -- 6. Leaderboard Cleanup
     local actualList = GetActualList()
     if actualList then
         for _, desc in ipairs(actualList:GetDescendants()) do
@@ -3009,7 +3454,7 @@ local function FullSuiteCleanup()
         end
     end
 
-    -- 6. Clean Janitor (all connections and instances)
+    -- 7. Clean Janitor (all connections and instances)
     for i = #Janitor, 1, -1 do
         local x = Janitor[i]
         if typeof(x) == "RBXScriptConnection" then
@@ -3034,6 +3479,7 @@ if genv then
         PersonalSpaceBubble = PersonalSpaceBubble,
         Locator = Locator,
         AntiAFK = AntiAFK,
+        CrowdOptimizer = CrowdOptimizer,
         Config = config,
         Cleanup = FullSuiteCleanup,
     }
@@ -3046,6 +3492,7 @@ return {
     PersonalSpaceBubble = PersonalSpaceBubble,
     Locator = Locator,
     AntiAFK = AntiAFK,
+    CrowdOptimizer = CrowdOptimizer,
     Config = config,
     Cleanup = FullSuiteCleanup,
 }
