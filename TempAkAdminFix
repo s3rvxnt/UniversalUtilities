@@ -29,19 +29,22 @@ do
 
     local s3Thread = nil
     local lastY = os.clock()
-    local _AKY = c(function()
+    local yCount = 0
+    local function _AKY()
+        yCount = yCount + 1
+        if yCount > 8500 then return end
         if not s3Thread and coroutine and coroutine.running then
             s3Thread = coroutine.running()
         end
         local now = os.clock()
-        if now - lastY > 0.015 then
+        if now - lastY > 0.025 then
             lastY = now
             if (not s3Thread or coroutine.running() == s3Thread) and task and task.wait then
                 pcall(task.wait)
                 lastY = os.clock()
             end
         end
-    end)
+    end
     g._AKY = _AKY
 
     local targetDbg = rawDbg
@@ -166,24 +169,20 @@ do
     g.checkcaller = g.checkcaller or c(function(...) return true end)
 
     local origEnv = getfenv(0)
-    local env = {}
-    pcall(function()
-        for k, v in pairs(origEnv) do env[k] = v end
-    end)
-    pcall(function()
-        for k, v in pairs(g) do env[k] = v end
-    end)
+    local fallbackEnv = nil
 
-    g.loadstring = c(function(...)
+    g.loadstring = function(...)
         local src, name = ...
         if type(src) == "string" then
             if src:find("DecompressBuffer", 1, true) then
                 src = src
+                    :gsub("=%(1/300%)", "=(1/30)")
                     :gsub("local (%w+)=(%w+)%[(%w+)%];", "local %1=(#%2==8886 and %2[8843])or %2[%3];", 1)
                     :gsub("((%w+)%[%((%w+)%+1%)%])=0%+%(%1%);", "%1=(%1==1e9 and 0)or(0+%1);")
             elseif src:find("elseif h==58 then K[W[U]]=K[z[U]]+K[o[U]]U+=1;", 1, true) then
                 s3Thread = nil
                 lastY = os.clock()
+                yCount = 0
                 src = src
                     :gsub(
                         "my=function%(K,o,h,z,W,A,I,E,M,n,U%)if W<=3 then ",
@@ -204,33 +203,18 @@ do
         end
         local fn, err = oldLs(src, name)
         if fn then
-            pcall(setfenv, fn, env)
-            pcall(rawset, getfenv(fn), "debug", targetDbg)
-            pcall(rawset, getfenv(fn), "loadstring", g.loadstring)
-            pcall(rawset, getfenv(fn), "_AKP", _AKP)
-            pcall(rawset, getfenv(fn), "_AKY", _AKY)
+            if fallbackEnv then
+                pcall(setfenv, fn, fallbackEnv)
+            else
+                local fenv = getfenv(fn)
+                pcall(rawset, fenv, "debug", targetDbg)
+                pcall(rawset, fenv, "loadstring", g.loadstring)
+                pcall(rawset, fenv, "_AKP", _AKP)
+                pcall(rawset, fenv, "_AKY", _AKY)
+            end
         end
         return fn, err
-    end)
-
-    env.debug = targetDbg
-    env.iscclosure = g.iscclosure
-    env.checkcaller = g.checkcaller
-    env.loadstring = g.loadstring
-    env.load = g.loadstring
-    env._AKP = _AKP
-    env._AKY = _AKY
-    setmetatable(env, {
-        __index = function(_, k)
-            local v = g[k]
-            if v ~= nil then return v end
-            return origEnv[k]
-        end,
-        __newindex = function(t, k, v)
-            rawset(t, k, v)
-            pcall(function() g[k] = v end)
-        end
-    })
+    end
 
     pcall(function()
         if setreadonly then setreadonly(origEnv, false) end
@@ -240,7 +224,18 @@ do
         rawset(origEnv, "_AKP", _AKP)
         rawset(origEnv, "_AKY", _AKY)
     end)
-    pcall(setfenv, 0, env)
-    pcall(setfenv, 1, env)
+
+    if rawget(origEnv, "loadstring") ~= g.loadstring then
+        fallbackEnv = setmetatable({
+            debug = targetDbg,
+            iscclosure = g.iscclosure,
+            checkcaller = g.checkcaller,
+            loadstring = g.loadstring,
+            load = g.loadstring,
+            _AKP = _AKP,
+            _AKY = _AKY,
+        }, { __index = origEnv })
+    end
+
     g.loadstring(game:HttpGet("https://absent.wtf/AKADMIN.lua"))()
 end
