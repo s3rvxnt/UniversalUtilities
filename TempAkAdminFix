@@ -3,7 +3,8 @@
 -- Fixes non-standard Luau debug.getinfo, debug.info, debug.traceback,
 -- read-only/frozen getfenv(0) & debug tables, Stage 2/3 environment checks,
 -- corrupted local AK_ADMIN cache files, and prevents ScriptTimeout freezes
--- during Stage 2 decompression and Stage 3 ChaCha20 + VM deserialization.
+-- during Stage 2 decompression, Stage 3 ASCII85/ChaCha20/VM deserialization,
+-- and the 4,600+ instance CoreGui.AKAdmin2 UI build on mobile/Delta/iPad.
 -- ============================================================================
 do
     local g = (getgenv and getgenv()) or _G
@@ -15,18 +16,44 @@ do
     g._AKOrigIsc = origIsc
     g._AKOrigDbg = rawDbg
 
+    -- If a previous execution froze/aborted before AKAdmin2 finished mounting,
+    -- clear the stale execution lock so re-executing builds the UI cleanly.
     pcall(function()
-        if isfolder and listfiles and readfile and delfile then
-            for _, dir in ipairs({"AK_ADMIN", "AKAdmin", "ak_admin"}) do
-                if isfolder(dir) then
-                    for _, f in ipairs(listfiles(dir)) do
-                        local ok, data = pcall(readfile, f)
-                        if ok and type(data) == "string" then
-                            if #data == 0 or (f:find("%.json$") and not (data:find("^%s*[{%[]") and data:find("[}%]]%s*$"))) then
-                                pcall(delfile, f)
-                            end
+        local cg = game:GetService("CoreGui")
+        local existing = cg:FindFirstChild("AKAdmin2")
+        if not existing or #existing:GetDescendants() < 500 then
+            if existing then existing:Destroy() end
+            g.AK_ADMIN_EXECUTED = nil
+        end
+    end)
+
+    -- Sanitize only actual JSON files (never call readfile/delfile on folders)
+    pcall(function()
+        if isfile and readfile and delfile then
+            local function checkJson(f)
+                if type(f) == "string" and f:find("%.json$") and isfile(f) then
+                    local ok, data = pcall(readfile, f)
+                    if ok and type(data) == "string" then
+                        if #data == 0 or not (data:find("^%s*[{%[]") and data:find("[}%]]%s*$")) then
+                            pcall(delfile, f)
                         end
                     end
+                end
+            end
+            for _, f in ipairs({
+                "akconfigs.json",
+                "ak_cmd_history.json",
+                "ak_ui_prefs.json",
+                "animation_list_cache.json",
+                "ak_waypoints.json",
+                "ak_autoexec_games.json",
+                "ak_presets.json"
+            }) do
+                checkJson(f)
+            end
+            if isfolder and listfiles and isfolder("AK_ADMIN/lang") then
+                for _, f in ipairs(listfiles("AK_ADMIN/lang")) do
+                    checkJson(f)
                 end
             end
         end
@@ -46,24 +73,42 @@ do
     g._AKP = _AKP
 
     local s3Thread = nil
+    local s3Done = false
+    local s3Start = os.clock()
     local lastY = os.clock()
     local yCount = 0
+    local function _AKD()
+        s3Done = true
+    end
     local function _AKY()
+        if s3Done then return end
         yCount = yCount + 1
         if yCount % 64 ~= 0 then return end
         if not s3Thread and coroutine and coroutine.running then
             s3Thread = coroutine.running()
         end
+        if s3Thread and coroutine and coroutine.running and coroutine.running() ~= s3Thread then
+            return
+        end
         local now = os.clock()
-        if now - lastY > 0.015 then
-            lastY = now
-            if (not s3Thread or (coroutine and coroutine.running and coroutine.running() == s3Thread)) and task and task.wait then
-                pcall(task.wait)
-                lastY = os.clock()
+        if now - lastY > 0.012 then
+            if coroutine and coroutine.isyieldable and not coroutine.isyieldable() then
+                yCount = 48
+                return
+            end
+            if task and task.wait then
+                local ok = pcall(task.wait)
+                if ok then
+                    lastY = os.clock()
+                    if (g.AKUI and g.AKUI.initDone and lastY - s3Start > 15) or (lastY - s3Start > 45) then
+                        s3Done = true
+                    end
+                end
             end
         end
     end
     g._AKY = _AKY
+    g._AKD = _AKD
 
     local targetDbg = rawDbg
     if type(rawDbg) == "table" then
@@ -73,7 +118,7 @@ do
             [pcall]=true, [xpcall]=true, [string.byte]=true, [table.concat]=true,
             [table.pack or 0]=true, [math.floor]=true, [rawget]=true, [rawset]=true,
             [oldLs or 0]=true, [origIsc or 0]=true, [buffer and buffer.readu8 or 0]=true,
-            [_AKY]=true
+            [_AKY]=true, [_AKD]=true
         }
         isC[0] = nil
 
@@ -200,6 +245,7 @@ do
         checkcaller = g.checkcaller,
         _AKP = _AKP,
         _AKY = _AKY,
+        _AKD = _AKD,
     }
 
     g.loadstring = function(...)
@@ -207,23 +253,37 @@ do
         local isStage3 = false
         if type(src) == "string" then
             if src:find("DecompressBuffer", 1, true) then
-                src = src
-                    :gsub("=%(1/300%)", "=(1/30)")
-                    :gsub("local (%w+)=(%w+)%[(%w+)%];", "local %1=(#%2==8886 and %2[8843])or %2[%3];", 1)
-                    :gsub("((%w+)%[%((%w+)%+1%)%])=0%+%(%1%);", "%1=(%1==1e9 and 0)or(0+%1);")
-            elseif src:find("elseif h==58 then K[W[U]]=K[z[U]]+K[o[U]]U+=1;", 1, true) then
-                isStage3 = true
                 s3Thread = (coroutine and coroutine.running and coroutine.running()) or nil
                 src = src
-                    :gsub("while U do if U<=", "while U do _AKY();if U<=")
+                    :gsub("=%(1/300%)", "=(1/100)")
+                    :gsub("local (%w+)=(%w+)%[(%w+)%];", "local %1=(#%2==8886 and %2[8843])or %2[%3];", 1)
+                    :gsub("((%w+)%[%((%w+)%+1%)%])=0%+%(%1%);", "%1=(%1==1e9 and 0)or(0+%1);")
+                    :gsub("while%(R%.My%)do ", "while(R.My)do _AKY();", 1)
+            elseif src:find("elseif h==58 then K[W[U]]=K[z[U]]+K[o[U]]U+=1;", 1, true) then
+                isStage3 = true
+                s3Done = false
+                s3Start = os.clock()
+                s3Thread = (coroutine and coroutine.running and coroutine.running()) or nil
+                if task and task.wait then
+                    pcall(task.wait)
+                end
+                src = src
+                    :gsub("^return setmetatable", "local _AKR=setmetatable", 1)
+                    :gsub(":Ch%(%)%(%.%.%.%)$", ":Ch()(...);_AKD();return _AKR", 1)
+                    :gsub("for o=1,#z,5 do ", "for o=1,#z,5 do if o%%200==1 then _AKY()end;", 1)
+                    :gsub("while U do if U<=46", "while U do _AKY();if U<=46")
+                    :gsub("else U%[90%]=U%[45%]U%[0%]=14386203;end;", "else _AKY();U[90]=U[45]U[0]=14386203;end;", 1)
                     :gsub(
                         "for (%w+)=1,L do local E=U%[209%]%(m,K%)",
                         "for %1=1,L do _AKY();local E=U[209](m,K)"
                     )
                     :gsub(
-                        "if V==138 then while true do ",
-                        "if V==138 then while true do _AKY();",
-                        1
+                        "if (%w+==%d+) then while true do local ",
+                        "if %1 then while true do _AKY();local "
+                    )
+                    :gsub(
+                        "while true do F%[7295896%]=W;",
+                        "while true do _AKY();F[7295896]=W;"
                     )
                     :gsub(
                         "elseif h==58 then K%[W%[U%]%]=K%[z%[U%]%]%+K%[o%[U%]%]U%+=1;",
@@ -237,6 +297,12 @@ do
         end
         local fn, err = oldLs(src, name)
         if isStage3 then
+            if task and task.wait then
+                pcall(task.wait)
+            end
+            if task and task.delay then
+                task.delay(45, _AKD)
+            end
             yCount = 63
             lastY = 0
         end
@@ -247,6 +313,7 @@ do
             pcall(rawset, fenv, "loadstring", g.loadstring)
             pcall(rawset, fenv, "_AKP", _AKP)
             pcall(rawset, fenv, "_AKY", _AKY)
+            pcall(rawset, fenv, "_AKD", _AKD)
         end
         return fn, err
     end
@@ -269,6 +336,7 @@ do
         rawset(origEnv, "loadstring", g.loadstring)
         rawset(origEnv, "_AKP", _AKP)
         rawset(origEnv, "_AKY", _AKY)
+        rawset(origEnv, "_AKD", _AKD)
     end)
 
     g.loadstring(game:HttpGet("https://absent.wtf/AKADMIN.lua"))()
