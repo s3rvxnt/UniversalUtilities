@@ -1,13 +1,32 @@
+-- ============================================================================
+-- UNIVERSAL EXECUTOR COMPATIBILITY SHIM (Madium / Helios / Real / Solara)
+-- Fixes non-standard Luau debug.getinfo, debug.info, debug.traceback,
+-- read-only/frozen getfenv(0) & debug tables, and Stage 2/3 environment checks
+-- ============================================================================
 do
     local g = (getgenv and getgenv()) or _G
     local c = newcclosure or function(...) return ... end
     local oldLs = g._AKOrigLs or g.loadstring or loadstring
     local origIsc = g._AKOrigIsc or g.iscclosure or iscclosure
+    local rawDbg = g._AKOrigDbg or debug
     g._AKOrigLs = oldLs
     g._AKOrigIsc = origIsc
-
-    local rawDbg = g._AKOrigDbg or debug
     g._AKOrigDbg = rawDbg
+
+    local _AKP = {
+        [785102147]=8828, [2007004171]=92280, [661488376]=64157, [601199165]=22828,
+        [1682564619]=5239, [885237975]=46847, [1571799572]=90431, [1680692403]=33157,
+        [1546116900]=9405, [141182753]=80298, [1275509515]=62152, [1637968901]=71939,
+        [1236683115]=79288, [1303655158]=71422, [1656451781]=52126, [1515524351]=54418,
+        [363954932]=61509, [1347070597]=30345, [756760012]=26911, [1437219674]=84703,
+        [122879770]=72501, [878366319]=88417, [912756091]=67570, [449818189]=75664,
+        [1318464810]=76481, [37680239]=64140, [667001448]=9678, [602732110]=69973,
+        [594746435]=80841, [235663668]=93486, [1656500033]=40759, [92591987]=7745,
+        [1547542338]=90886, [7451]=7417
+    }
+    g._AKP = _AKP
+
+    local targetDbg = rawDbg
     if type(rawDbg) == "table" then
         local gi, inf, tb = rawDbg.getinfo, rawDbg.info, rawDbg.traceback
         local isC = {
@@ -115,33 +134,81 @@ do
                 return origIsc(...)
             end)
             isC[g.iscclosure] = true
-            pcall(rawset, getfenv(0), "iscclosure", g.iscclosure)
         end
 
         pcall(function()
             if setreadonly then setreadonly(rawDbg, false) end
             rawDbg.getinfo, rawDbg.info, rawDbg.traceback = dbg.getinfo, dbg.info, dbg.traceback
         end)
-        local targetDbg = (rawDbg.info == dbg.info and rawDbg.traceback == dbg.traceback) and rawDbg or dbg
+        targetDbg = (rawDbg.info == dbg.info and rawDbg.traceback == dbg.traceback) and rawDbg or dbg
         g.debug = targetDbg
-        pcall(rawset, getfenv(0), "debug", targetDbg)
     end
 
     g.checkcaller = g.checkcaller or c(function(...) return true end)
+
+    local origEnv = getfenv(0)
+    local env = {}
+    pcall(function()
+        for k, v in pairs(origEnv) do env[k] = v end
+    end)
+    pcall(function()
+        for k, v in pairs(g) do env[k] = v end
+    end)
+
     g.loadstring = c(function(...)
         local src, name = ...
-        if type(src) == "string" and src:find("DecompressBuffer", 1, true) then
-            src = src
-                :gsub("=%(1/300%)", "=(9e9)")
-                :gsub("=%(1/240%)", "=(9e9)")
-                :gsub("local (%w+)=(%w+)%[(%w+)%];", "local %1=(#%2==8886 and %2[8843])or %2[%3];", 1)
-                :gsub("((%w+)%[%((%w+)%+1%)%])=0%+%(%1%);", "%1=(%1==1e9 and 0)or(0+%1);")
+        if type(src) == "string" then
+            if src:find("DecompressBuffer", 1, true) then
+                src = src
+                    :gsub("=%(1/300%)", "=(9e9)")
+                    :gsub("=%(1/240%)", "=(9e9)")
+                    :gsub("local (%w+)=(%w+)%[(%w+)%];", "local %1=(#%2==8886 and %2[8843])or %2[%3];", 1)
+                    :gsub("((%w+)%[%((%w+)%+1%)%])=0%+%(%1%);", "%1=(%1==1e9 and 0)or(0+%1);")
+            elseif src:find("elseif h==58 then K[W[U]]=K[z[U]]+K[o[U]]U+=1;", 1, true) then
+                src = src:gsub(
+                    "elseif h==58 then K%[W%[U%]%]=K%[z%[U%]%]%+K%[o%[U%]%]U%+=1;",
+                    "elseif h==58 then K[W[U]]=K[z[U]]+(_AKP[K[o[U]]]or K[o[U]])U+=1;",
+                    1
+                )
+            end
         end
         local fn, err = oldLs(src, name)
-        if fn and g.debug then pcall(rawset, getfenv(fn), "debug", g.debug) end
+        if fn then
+            pcall(setfenv, fn, env)
+            pcall(rawset, getfenv(fn), "debug", targetDbg)
+            pcall(rawset, getfenv(fn), "loadstring", g.loadstring)
+            pcall(rawset, getfenv(fn), "_AKP", _AKP)
+        end
         return fn, err
     end)
-    pcall(rawset, getfenv(0), "loadstring", g.loadstring)
+
+    env.debug = targetDbg
+    env.iscclosure = g.iscclosure
+    env.checkcaller = g.checkcaller
+    env.loadstring = g.loadstring
+    env.load = g.loadstring
+    env._AKP = _AKP
+    setmetatable(env, {
+        __index = function(_, k)
+            local v = g[k]
+            if v ~= nil then return v end
+            return origEnv[k]
+        end,
+        __newindex = function(t, k, v)
+            rawset(t, k, v)
+            pcall(function() g[k] = v end)
+        end
+    })
+
+    pcall(function()
+        if setreadonly then setreadonly(origEnv, false) end
+        rawset(origEnv, "debug", targetDbg)
+        rawset(origEnv, "iscclosure", g.iscclosure)
+        rawset(origEnv, "loadstring", g.loadstring)
+        rawset(origEnv, "_AKP", _AKP)
+    end)
+    pcall(setfenv, 0, env)
+    pcall(setfenv, 1, env)
 end
 
-loadstring(game:HttpGet("https://absent.wtf/AKADMIN.lua"))()
+((getgenv and getgenv() or _G).loadstring or loadstring)(game:HttpGet("https://absent.wtf/AKADMIN.lua"))()
