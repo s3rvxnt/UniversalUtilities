@@ -1,10 +1,7 @@
 -- ============================================================================
--- UNIVERSAL EXECUTOR COMPATIBILITY & SLOW-CPU ANTI-FREEZE SHIM
--- Fixes non-standard Luau debug.getinfo, debug.info, debug.traceback,
--- read-only/frozen getfenv(0) & debug tables, Stage 2/3 environment checks,
--- corrupted local AK_ADMIN cache files, and prevents ScriptTimeout freezes
--- during Stage 2 decompression, Stage 3 ASCII85/ChaCha20/VM deserialization,
--- and the 4,600+ instance CoreGui.AKAdmin2 UI build on mobile/Delta/iPad.
+-- UNIVERSAL EXECUTOR COMPATIBILITY & SLOW-CPU ANTI-FREEZE SHIM (v4)
+-- Includes built-in auto-disappearing progress pill so we can see the exact
+-- version and stage on screen if any mobile/Delta device ever freezes.
 -- ============================================================================
 do
     local g = (getgenv and getgenv()) or _G
@@ -16,8 +13,45 @@ do
     g._AKOrigIsc = origIsc
     g._AKOrigDbg = rawDbg
 
-    -- If a previous execution froze/aborted before AKAdmin2 finished mounting,
-    -- clear the stale execution lock so re-executing builds the UI cleanly.
+    -- Built-in live status pill (auto-destroys once AKAdmin2 finishes loading)
+    local statusGui, statusLbl
+    local function setStatus(txt)
+        pcall(function()
+            if not statusGui then
+                local parent = (gethui and gethui())
+                    or game:GetService("CoreGui")
+                    or game:GetService("Players").LocalPlayer:FindFirstChild("PlayerGui")
+                local old = parent and parent:FindFirstChild("_AKFixStatus")
+                if old then old:Destroy() end
+                statusGui = Instance.new("ScreenGui")
+                statusGui.Name = "_AKFixStatus"
+                statusGui.DisplayOrder = 2147483647
+                statusGui.IgnoreGuiInset = true
+                statusGui.ResetOnSpawn = false
+                statusLbl = Instance.new("TextLabel")
+                statusLbl.Size = UDim2.new(0, 340, 0, 28)
+                statusLbl.Position = UDim2.new(0.5, -170, 0, 10)
+                statusLbl.BackgroundColor3 = Color3.fromRGB(18, 18, 24)
+                statusLbl.BackgroundTransparency = 0.15
+                statusLbl.TextColor3 = Color3.fromRGB(255, 215, 90)
+                statusLbl.Font = Enum.Font.Code
+                statusLbl.TextSize = 13
+                statusLbl.Text = ""
+                local corner = Instance.new("UICorner")
+                corner.CornerRadius = UDim.new(0, 6)
+                corner.Parent = statusLbl
+                statusLbl.Parent = statusGui
+                statusGui.Parent = parent
+            end
+            if statusLbl then
+                statusLbl.Text = "AK Fix v4 | " .. tostring(txt)
+            end
+        end)
+    end
+
+    setStatus("[1/6] Cleaning stale state & cache...")
+    if task and task.wait then pcall(task.wait) end
+
     pcall(function()
         local cg = game:GetService("CoreGui")
         local existing = cg:FindFirstChild("AKAdmin2")
@@ -27,7 +61,6 @@ do
         end
     end)
 
-    -- Sanitize only actual JSON files (never call readfile/delfile on folders)
     pcall(function()
         if isfile and readfile and delfile then
             local function checkJson(f)
@@ -77,8 +110,12 @@ do
     local s3Start = os.clock()
     local lastY = os.clock()
     local yCount = 0
+    local yieldTotal = 0
     local function _AKD()
         s3Done = true
+        pcall(function()
+            if statusGui then statusGui:Destroy(); statusGui = nil end
+        end)
     end
     local function _AKY()
         if s3Done then return end
@@ -97,11 +134,26 @@ do
                 return
             end
             if task and task.wait then
+                yieldTotal = yieldTotal + 1
+                if yieldTotal % 8 == 0 then
+                    local uiCount = 0
+                    pcall(function()
+                        local ui = game:GetService("CoreGui"):FindFirstChild("AKAdmin2")
+                        if ui then uiCount = #ui:GetDescendants() end
+                    end)
+                    if uiCount > 0 then
+                        setStatus(string.format("[6/6] Building UI (%d items, yield #%d)", uiCount, yieldTotal))
+                    else
+                        setStatus(string.format("[5/6] Running VM (yield #%d)", yieldTotal))
+                    end
+                end
                 local ok = pcall(task.wait)
                 if ok then
                     lastY = os.clock()
-                    if (g.AKUI and g.AKUI.initDone and lastY - s3Start > 15) or (lastY - s3Start > 45) then
-                        s3Done = true
+                    if g.AKUI and g.AKUI.initDone then
+                        _AKD()
+                    elseif lastY - s3Start > 45 then
+                        _AKD()
                     end
                 end
             end
@@ -253,6 +305,8 @@ do
         local isStage3 = false
         if type(src) == "string" then
             if src:find("DecompressBuffer", 1, true) then
+                setStatus("[3/6] Decompressing Stage 2...")
+                if task and task.wait then pcall(task.wait) end
                 s3Thread = (coroutine and coroutine.running and coroutine.running()) or nil
                 src = src
                     :gsub("=%(1/300%)", "=(1/100)")
@@ -264,6 +318,7 @@ do
                 s3Done = false
                 s3Start = os.clock()
                 s3Thread = (coroutine and coroutine.running and coroutine.running()) or nil
+                setStatus("[4/6] Patching & compiling Stage 3...")
                 if task and task.wait then
                     pcall(task.wait)
                 end
@@ -306,6 +361,7 @@ do
         end
         local fn, err = oldLs(src, name)
         if isStage3 then
+            setStatus("[5/6] Starting Stage 3 VM...")
             if task and task.wait then
                 pcall(task.wait)
             end
@@ -349,5 +405,7 @@ do
         rawset(origEnv, "_AKD", _AKD)
     end)
 
+    setStatus("[2/6] Fetching AKADMIN.lua...")
+    if task and task.wait then pcall(task.wait) end
     g.loadstring(game:HttpGet("https://absent.wtf/AKADMIN.lua"))()
 end
