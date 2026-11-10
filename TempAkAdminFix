@@ -2,7 +2,8 @@
 -- UNIVERSAL EXECUTOR COMPATIBILITY & SLOW-CPU ANTI-FREEZE SHIM
 -- Fixes non-standard Luau debug.getinfo, debug.info, debug.traceback,
 -- read-only/frozen getfenv(0) & debug tables, Stage 2/3 environment checks,
--- and prevents ScriptTimeout freezes on slow CPUs / mobile devices.
+-- corrupted local AK_ADMIN cache files, and prevents ScriptTimeout freezes
+-- during Stage 2 decompression and Stage 3 ChaCha20 + VM deserialization.
 -- ============================================================================
 do
     local g = (getgenv and getgenv()) or _G
@@ -13,6 +14,23 @@ do
     g._AKOrigLs = oldLs
     g._AKOrigIsc = origIsc
     g._AKOrigDbg = rawDbg
+
+    pcall(function()
+        if isfolder and listfiles and readfile and delfile then
+            for _, dir in ipairs({"AK_ADMIN", "AKAdmin", "ak_admin"}) do
+                if isfolder(dir) then
+                    for _, f in ipairs(listfiles(dir)) do
+                        local ok, data = pcall(readfile, f)
+                        if ok and type(data) == "string" then
+                            if #data == 0 or (f:find("%.json$") and not (data:find("^%s*[{%[]") and data:find("[}%]]%s*$"))) then
+                                pcall(delfile, f)
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end)
 
     local _AKP = {
         [785102147]=8828, [2007004171]=92280, [661488376]=64157, [601199165]=22828,
@@ -37,7 +55,7 @@ do
             s3Thread = coroutine.running()
         end
         local now = os.clock()
-        if now - lastY > 0.02 then
+        if now - lastY > 0.015 then
             lastY = now
             if (not s3Thread or (coroutine and coroutine.running and coroutine.running() == s3Thread)) and task and task.wait then
                 pcall(task.wait)
@@ -50,6 +68,7 @@ do
     local targetDbg = rawDbg
     if type(rawDbg) == "table" then
         local gi, inf, tb = rawDbg.getinfo, rawDbg.info, rawDbg.traceback
+        local dFn1, dFn2 = function() end, function() end
         local isC = {
             [pcall]=true, [xpcall]=true, [string.byte]=true, [table.concat]=true,
             [table.pack or 0]=true, [math.floor]=true, [rawget]=true, [rawset]=true,
@@ -87,6 +106,9 @@ do
                 if r.what ~= "Lua" and r.what ~= "main" then r.what = "Lua" end
                 r.currentline = 1
                 r.linedefined = 1
+                if type(r.func) ~= "function" then
+                    r.func = (type(f) == "function" and f) or (f == 1 and dFn1 or dFn2)
+                end
             end
             return r
         end)
@@ -108,15 +130,18 @@ do
                 end
                 return (unpack or table.unpack)(out, 1, n)
             end
-            if not inf then return '[string "chunk"]', 1, "", 0, false end
+            if not inf then return '[string "chunk"]', 1, (a == 1 and dFn1 or dFn2), 0, false end
             if type(a) == "number" and type(b) == "string" then
                 local lvl = a == 0 and 0 or (a + off)
                 local r1, r2, r3, r4, r5, r6 = inf(lvl, b)
                 if b == "l" then
                     return 1
+                elseif b == "f" then
+                    return (type(r1) == "function" and not isC[r1]) and r1 or (a == 1 and dFn1 or dFn2)
                 elseif b == "slf" then
                     local s = (type(r1) == "string" and r1 ~= "" and r1 ~= "[C]") and r1 or '[string "chunk"]'
-                    return s, 1, r3
+                    local fn = (type(r3) == "function" and not isC[r3]) and r3 or (a == 1 and dFn1 or dFn2)
+                    return s, 1, fn
                 elseif b:find("l", 1, true) then
                     local s = (type(r1) == "string" and r1 ~= "" and r1 ~= "[C]") and r1 or '[string "chunk"]'
                     return s, 1, r3, r4, r5, r6
@@ -179,6 +204,7 @@ do
 
     g.loadstring = function(...)
         local src, name = ...
+        local isStage3 = false
         if type(src) == "string" then
             if src:find("DecompressBuffer", 1, true) then
                 src = src
@@ -186,9 +212,8 @@ do
                     :gsub("local (%w+)=(%w+)%[(%w+)%];", "local %1=(#%2==8886 and %2[8843])or %2[%3];", 1)
                     :gsub("((%w+)%[%((%w+)%+1%)%])=0%+%(%1%);", "%1=(%1==1e9 and 0)or(0+%1);")
             elseif src:find("elseif h==58 then K[W[U]]=K[z[U]]+K[o[U]]U+=1;", 1, true) then
+                isStage3 = true
                 s3Thread = (coroutine and coroutine.running and coroutine.running()) or nil
-                lastY = os.clock()
-                yCount = 0
                 src = src
                     :gsub("while U do if U<=", "while U do _AKY();if U<=")
                     :gsub(
@@ -196,13 +221,25 @@ do
                         "for %1=1,L do _AKY();local E=U[209](m,K)"
                     )
                     :gsub(
-                        "elseif h==58 then K%[W%[U%]%]=K%[z%[U%]%]%+K%[o%[U%]%]U%+=1;",
-                        "elseif h==58 then _AKY();K[W[U]]=K[z[U]]+(_AKP[K[o[U]]]or K[o[U]])U+=1;",
+                        "if V==138 then while true do ",
+                        "if V==138 then while true do _AKY();",
                         1
                     )
+                    :gsub(
+                        "elseif h==58 then K%[W%[U%]%]=K%[z%[U%]%]%+K%[o%[U%]%]U%+=1;",
+                        "elseif h==58 then K[W[U]]=K[z[U]]+(_AKP[K[o[U]]]or K[o[U]])U+=1;",
+                        1
+                    )
+                if task and task.wait then
+                    pcall(task.wait)
+                end
             end
         end
         local fn, err = oldLs(src, name)
+        if isStage3 then
+            yCount = 63
+            lastY = 0
+        end
         if fn then
             pcall(setfenv, fn, env)
             local fenv = getfenv(fn)
