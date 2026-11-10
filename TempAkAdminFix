@@ -1,7 +1,7 @@
 -- ============================================================================
--- UNIVERSAL EXECUTOR COMPATIBILITY & SLOW-CPU ANTI-FREEZE SHIM (v4)
--- Includes built-in auto-disappearing diagnostic pill (Stage, Executor,
--- Elapsed Time, Live FPS, Worst Frame Lag, Yield Count, and UI Progress).
+-- UNIVERSAL EXECUTOR COMPATIBILITY & SLOW-CPU ANTI-FREEZE SHIM (v5)
+-- Includes built-in auto-disappearing diagnostic pill AND live AKAuthGui
+-- loader hijack (real-time 0-100% progress bar, percentage, and UI module).
 -- ============================================================================
 do
     local g = (getgenv and getgenv()) or _G
@@ -22,7 +22,25 @@ do
         end
     end)
 
-    -- Built-in live diagnostic pill (auto-destroys once AKAdmin2 finishes loading)
+    local CoreGui = game:GetService("CoreGui")
+    local Players = game:GetService("Players")
+    local RunService = game:GetService("RunService")
+    local TweenService = game:GetService("TweenService")
+
+    local function findGui(name)
+        local found = CoreGui:FindFirstChild(name)
+        if found then return found end
+        if gethui then
+            local ok, hui = pcall(gethui)
+            if ok and hui and hui ~= CoreGui then
+                found = hui:FindFirstChild(name)
+                if found then return found end
+            end
+        end
+        return nil
+    end
+
+    -- Built-in live diagnostic pill + AKAuthGui live progress hijacker
     local statusGui, statusLbl, subLbl, hbConn
     local t0 = os.clock()
     local lastY = t0
@@ -31,21 +49,212 @@ do
     local spikeCount = 0
     local yieldTotal = 0
     local uiCount = 0
+    local uiPhase = ""
     local lastUiCheck = 0
     local curStage = "[1/6] Init"
 
-    local function updatePill()
-        if not statusLbl or not subLbl then return end
+    -- AKAuthGui hijack state
+    local authGui, authCard, authStatusLbl, authPctLbl, authFill
+    local authLatched = false
+    local authBaseText = "Loading AK ADMIN"
+    local latchYield = 0
+    local maxRawPct = 0
+    local visPct = 0
+    local lastFillScale = nil
+
+    local function computeRawPct()
+        if g.AKUI and g.AKUI.initDone then
+            maxRawPct = 100
+            return 100
+        end
+        local raw = 0
+        if uiCount > 0 then
+            local expected = 4430 + (#Players:GetPlayers() * 15)
+            if uiCount >= expected then
+                expected = uiCount + 80
+            end
+            raw = 14 + math.clamp(uiCount / expected, 0, 0.99) * 85
+        elseif authLatched then
+            raw = math.clamp(4 + (yieldTotal - latchYield) * 0.6, 4, 14)
+        end
+        if raw > maxRawPct then
+            maxRawPct = raw
+        end
+        return maxRawPct
+    end
+
+    local function stepAuthHijack(dt)
+        if not authLatched then
+            local ag = findGui("AKAuthGui")
+            if not ag then return end
+            local card
+            for _, ch in ipairs(ag:GetChildren()) do
+                if ch:IsA("Frame") and ch.Size.X.Offset >= 300 then
+                    card = ch
+                    break
+                end
+            end
+            if not card then return end
+
+            local track, lbl
+            for _, ch in ipairs(card:GetChildren()) do
+                if ch:IsA("Frame") and ch.Size.Y.Offset >= 2 and ch.Size.Y.Offset <= 6
+                    and ch.Position.Y.Offset >= 95 and ch.Position.Y.Offset <= 120 then
+                    track = ch
+                elseif ch:IsA("TextLabel") and ch.Name ~= "_AKPct"
+                    and ch.Position.Y.Offset >= 70 and ch.Position.Y.Offset <= 106 then
+                    lbl = ch
+                end
+            end
+            local fill = track and track:FindFirstChildWhichIsA("Frame")
+            if not lbl or not fill then return end
+
+            local txt = lbl.Text or ""
+            local hasBrand = txt:upper():find("AK ADMIN", 1, true) ~= nil
+            if hasBrand or (uiCount > 0 and card.Size.Y.Offset < 220) then
+                authGui = ag
+                authCard = card
+                authStatusLbl = lbl
+                authFill = fill
+                authLatched = true
+                latchYield = yieldTotal
+
+                if hasBrand then
+                    local base = txt:gsub("%s*·.*$", ""):gsub("%.%.%.%s*$", "")
+                    if base ~= "" then authBaseText = base end
+                end
+
+                maxRawPct = 4
+                visPct = 4
+                lastFillScale = 0.04
+
+                -- Cancel AK Admin's static 0->100% fake tween on the fill bar
+                pcall(function()
+                    TweenService:Create(
+                        authFill,
+                        TweenInfo.new(0.01, Enum.EasingStyle.Linear),
+                        { Size = UDim2.new(0.04, 0, 1, 0) }
+                    ):Play()
+                end)
+                authFill.Size = UDim2.new(0.04, 0, 1, 0)
+
+                authStatusLbl.TextXAlignment = Enum.TextXAlignment.Left
+                authStatusLbl.TextTruncate = Enum.TextTruncate.AtEnd
+                authStatusLbl.Size = UDim2.new(
+                    1,
+                    -(authStatusLbl.Position.X.Offset + 68),
+                    authStatusLbl.Size.Y.Scale,
+                    authStatusLbl.Size.Y.Offset
+                )
+
+                authPctLbl = card:FindFirstChild("_AKPct")
+                if not authPctLbl then
+                    authPctLbl = Instance.new("TextLabel")
+                    authPctLbl.Name = "_AKPct"
+                    authPctLbl.BackgroundTransparency = 1
+                    authPctLbl.Font = authStatusLbl.Font
+                    authPctLbl.TextSize = authStatusLbl.TextSize
+                    authPctLbl.TextColor3 = authStatusLbl.TextColor3
+                    authPctLbl.TextXAlignment = Enum.TextXAlignment.Right
+                    authPctLbl.TextYAlignment = authStatusLbl.TextYAlignment
+                    authPctLbl.AnchorPoint = Vector2.new(1, authStatusLbl.AnchorPoint.Y)
+                    authPctLbl.Position = UDim2.new(
+                        1, -22,
+                        authStatusLbl.Position.Y.Scale,
+                        authStatusLbl.Position.Y.Offset
+                    )
+                    authPctLbl.Size = UDim2.new(
+                        0, 48,
+                        authStatusLbl.Size.Y.Scale,
+                        authStatusLbl.Size.Y.Offset
+                    )
+                    authPctLbl.Parent = card
+                end
+                authPctLbl.TextTransparency = authStatusLbl.TextTransparency
+                authPctLbl.Text = "4%"
+            end
+        end
+
+        if authLatched then
+            if not authGui or not authGui.Parent or not authFill or not authFill.Parent then
+                return
+            end
+            local targetPct = computeRawPct()
+            if targetPct >= 100 then
+                visPct = 100
+            else
+                visPct = visPct + (targetPct - visPct) * math.clamp((dt or 0.016) * 10, 0.05, 1)
+                if visPct > targetPct then visPct = targetPct end
+            end
+
+            local scale = math.clamp(visPct / 100, 0.04, 1)
+            -- Re-cancel if AK Admin chains a follow-up tween on authFill.Size
+            if lastFillScale and scale < 0.96 and math.abs(authFill.Size.X.Scale - lastFillScale) > 0.025 then
+                pcall(function()
+                    TweenService:Create(
+                        authFill,
+                        TweenInfo.new(0.01, Enum.EasingStyle.Linear),
+                        { Size = UDim2.new(scale, 0, 1, 0) }
+                    ):Play()
+                end)
+            end
+            authFill.Size = UDim2.new(scale, 0, 1, 0)
+            lastFillScale = scale
+
+            local dispPct = math.clamp(math.floor(visPct + 0.5), 1, 100)
+            if authStatusLbl and authStatusLbl.Parent then
+                local suffix = (dispPct >= 100 and "Ready!")
+                    or (uiPhase ~= "" and (uiPhase .. "..."))
+                    or "Initializing..."
+                authStatusLbl.Text = authBaseText .. " · " .. suffix
+                if authPctLbl and authPctLbl.Parent then
+                    authPctLbl.TextTransparency = authStatusLbl.TextTransparency
+                    authPctLbl.Text = string.format("%d%%", dispPct)
+                end
+            end
+        end
+    end
+
+    local function updatePill(dt)
         local now = os.clock()
-        if now - lastUiCheck > 0.25 then
+        if now - lastUiCheck > 0.12 then
             lastUiCheck = now
             pcall(function()
-                local ui = game:GetService("CoreGui"):FindFirstChild("AKAdmin2")
-                if ui then uiCount = #ui:GetDescendants() end
+                local ui = findGui("AKAdmin2")
+                if ui then
+                    uiCount = #ui:GetDescendants()
+                    local kids = ui:GetChildren()
+                    local lastKid = kids[#kids]
+                    if lastKid then
+                        local kn = lastKid.Name
+                        if kn:find("^Rail") or kn == "InfoHolder" then
+                            uiPhase = "Navigation"
+                        elseif kn == "DynamicIsland" or kn == "IslandStats" then
+                            uiPhase = "Dynamic Island"
+                        elseif kn == "CmdBarHolder" or kn == "CmdListHolder" then
+                            uiPhase = "Command Bar"
+                        elseif kn == "PanelHolder" then
+                            local tl = lastKid:FindFirstChildWhichIsA("TextLabel", true)
+                            local raw = tl and tl.Text or ""
+                            if raw ~= "" and #raw <= 28 then
+                                if raw:match("^[%u%s]+$") then
+                                    raw = raw:lower()
+                                        :gsub("(%a)([%w']*)", function(a, b) return a:upper() .. b end)
+                                        :gsub("%f[%a]Ak%f[%A]", "AK")
+                                end
+                                uiPhase = raw
+                            end
+                        end
+                    end
+                end
             end)
         end
-        local uiStr = uiCount > 0 and string.format(" (UI: %d)", uiCount) or ""
-        statusLbl.Text = string.format("AK Fix v4 [%s] | %s%s", execName, curStage, uiStr)
+        pcall(stepAuthHijack, dt)
+        if not statusLbl or not subLbl then return end
+        local pctStr = (uiCount > 0 or authLatched)
+            and string.format(" (%d%% | UI: %d)", math.floor(math.max(visPct, computeRawPct()) + 0.5), uiCount)
+            or ""
+        statusLbl.Text = string.format("AK Fix v5 [%s] | %s%s", execName, curStage, pctStr)
         subLbl.Text = string.format(
             "%.1fs | FPS: %d | MaxLag: %.0fms | Spikes: %d | Yields: %d",
             now - t0, curFps, maxDt * 1000, spikeCount, yieldTotal
@@ -59,8 +268,8 @@ do
         pcall(function()
             if not statusGui then
                 local parent = (gethui and gethui())
-                    or game:GetService("CoreGui")
-                    or game:GetService("Players").LocalPlayer:FindFirstChild("PlayerGui")
+                    or CoreGui
+                    or Players.LocalPlayer:FindFirstChild("PlayerGui")
                 local old = parent and parent:FindFirstChild("_AKFixStatus")
                 if old then old:Destroy() end
 
@@ -71,8 +280,8 @@ do
                 statusGui.ResetOnSpawn = false
 
                 local frame = Instance.new("Frame")
-                frame.Size = UDim2.new(0, 420, 0, 44)
-                frame.Position = UDim2.new(0.5, -210, 0, 10)
+                frame.Size = UDim2.new(0, 440, 0, 44)
+                frame.Position = UDim2.new(0.5, -220, 0, 10)
                 frame.BackgroundColor3 = Color3.fromRGB(16, 18, 24)
                 frame.BackgroundTransparency = 0.12
                 frame.BorderSizePixel = 0
@@ -108,15 +317,18 @@ do
                 frame.Parent = statusGui
                 statusGui.Parent = parent
 
-                hbConn = game:GetService("RunService").Heartbeat:Connect(function(dt)
+                hbConn = RunService.Heartbeat:Connect(function(dt)
                     lastY = os.clock()
                     if dt > maxDt then maxDt = dt end
                     if dt > 0.100 then spikeCount = spikeCount + 1 end
                     curFps = math.clamp(math.floor(1 / math.max(dt, 0.001) + 0.5), 1, 240)
-                    updatePill()
+                    updatePill(dt)
+                    if g.AKUI and g.AKUI.initDone and g._AKD then
+                        g._AKD()
+                    end
                 end)
             end
-            updatePill()
+            updatePill(0.016)
         end)
     end
 
@@ -124,11 +336,11 @@ do
     if task and task.wait then pcall(task.wait) end
 
     pcall(function()
-        local cg = game:GetService("CoreGui")
-        local existing = cg:FindFirstChild("AKAdmin2")
+        local existing = findGui("AKAdmin2")
         if not existing or #existing:GetDescendants() < 500 then
             if existing then existing:Destroy() end
             g.AK_ADMIN_EXECUTED = nil
+            g.AKUI = nil
         end
     end)
 
@@ -184,6 +396,9 @@ do
         if s3Done then return end
         s3Done = true
         pcall(function()
+            maxRawPct = 100
+            visPct = 100
+            pcall(stepAuthHijack, 1)
             if hbConn then hbConn:Disconnect(); hbConn = nil end
             setStatus("[6/6] Loaded!")
             if statusGui then
@@ -212,7 +427,7 @@ do
             if task and task.wait then
                 yieldTotal = yieldTotal + 1
                 if yieldTotal % 8 == 0 then
-                    local hasUi = game:GetService("CoreGui"):FindFirstChild("AKAdmin2") ~= nil
+                    local hasUi = findGui("AKAdmin2") ~= nil
                     setStatus(hasUi and "[6/6] Building UI..." or "[5/6] Running VM...")
                 end
                 local ok = pcall(task.wait)
@@ -220,7 +435,7 @@ do
                     lastY = os.clock()
                     if g.AKUI and g.AKUI.initDone then
                         _AKD()
-                    elseif lastY - s3Start > 45 then
+                    elseif (lastY - s3Start > 60) and not findGui("AKAuthGui") then
                         _AKD()
                     end
                 end
@@ -434,7 +649,9 @@ do
                 pcall(task.wait)
             end
             if task and task.delay then
-                task.delay(45, _AKD)
+                task.delay(60, function()
+                    if not findGui("AKAuthGui") then _AKD() end
+                end)
             end
             yCount = 63
             lastY = 0
