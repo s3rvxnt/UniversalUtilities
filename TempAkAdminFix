@@ -267,6 +267,15 @@ do
                 if task and task.wait then
                     pcall(task.wait)
                 end
+                local b1, b2 = src:find(",y=[==[", 1, true)
+                local e1, e2 = src:find("]==],", b2 or 1, true)
+                if b1 and e1 then
+                    local blob = src:sub(b2 + 1, e1 - 1)
+                    g._AKB = blob
+                    env._AKB = blob
+                    pcall(rawset, origEnv, "_AKB", blob)
+                    src = src:sub(1, b1 - 1) .. ",y=_AKB," .. src:sub(e2 + 1)
+                end
                 src = src
                     :gsub("^return setmetatable", "local _AKR=setmetatable", 1)
                     :gsub(":Ch%(%)%(%.%.%.%)$", ":Ch()(...);_AKD();return _AKR", 1)
@@ -314,6 +323,7 @@ do
             pcall(rawset, fenv, "_AKP", _AKP)
             pcall(rawset, fenv, "_AKY", _AKY)
             pcall(rawset, fenv, "_AKD", _AKD)
+            pcall(rawset, fenv, "_AKB", g._AKB)
         end
         return fn, err
     end
