@@ -1,7 +1,7 @@
 -- ============================================================================
 -- UNIVERSAL EXECUTOR COMPATIBILITY & SLOW-CPU ANTI-FREEZE SHIM (v4)
--- Includes built-in auto-disappearing progress pill so we can see the exact
--- version and stage on screen if any mobile/Delta device ever freezes.
+-- Includes built-in auto-disappearing diagnostic pill (Stage, Executor,
+-- Elapsed Time, Live FPS, Worst Frame Lag, Yield Count, and UI Progress).
 -- ============================================================================
 do
     local g = (getgenv and getgenv()) or _G
@@ -13,9 +13,43 @@ do
     g._AKOrigIsc = origIsc
     g._AKOrigDbg = rawDbg
 
-    -- Built-in live status pill (auto-destroys once AKAdmin2 finishes loading)
-    local statusGui, statusLbl
+    local execName = "Unknown"
+    pcall(function()
+        if identifyexecutor then
+            execName = tostring((identifyexecutor()))
+        elseif getexecutorname then
+            execName = tostring((getexecutorname()))
+        end
+    end)
+
+    -- Built-in live diagnostic pill (auto-destroys once AKAdmin2 finishes loading)
+    local statusGui, statusLbl, subLbl, hbConn
+    local t0 = os.clock()
+    local maxDt = 0
+    local curFps = 60
+    local spikeCount = 0
+    local yieldTotal = 0
+    local curStage = "[1/6] Init"
+
+    local function updatePill()
+        if not statusLbl or not subLbl then return end
+        local uiCount = 0
+        pcall(function()
+            local ui = game:GetService("CoreGui"):FindFirstChild("AKAdmin2")
+            if ui then uiCount = #ui:GetDescendants() end
+        end)
+        local uiStr = uiCount > 0 and string.format(" (UI: %d)", uiCount) or ""
+        statusLbl.Text = string.format("AK Fix v4 [%s] | %s%s", execName, curStage, uiStr)
+        subLbl.Text = string.format(
+            "%.1fs | FPS: %d | MaxLag: %.0fms | Spikes: %d | Yields: %d",
+            os.clock() - t0, curFps, maxDt * 1000, spikeCount, yieldTotal
+        )
+        subLbl.TextColor3 = (maxDt < 0.250) and Color3.fromRGB(130, 235, 170)
+            or ((maxDt < 1.0) and Color3.fromRGB(255, 205, 90) or Color3.fromRGB(255, 105, 105))
+    end
+
     local function setStatus(txt)
+        curStage = tostring(txt)
         pcall(function()
             if not statusGui then
                 local parent = (gethui and gethui())
@@ -23,33 +57,63 @@ do
                     or game:GetService("Players").LocalPlayer:FindFirstChild("PlayerGui")
                 local old = parent and parent:FindFirstChild("_AKFixStatus")
                 if old then old:Destroy() end
+
                 statusGui = Instance.new("ScreenGui")
                 statusGui.Name = "_AKFixStatus"
                 statusGui.DisplayOrder = 2147483647
                 statusGui.IgnoreGuiInset = true
                 statusGui.ResetOnSpawn = false
+
+                local frame = Instance.new("Frame")
+                frame.Size = UDim2.new(0, 420, 0, 44)
+                frame.Position = UDim2.new(0.5, -210, 0, 10)
+                frame.BackgroundColor3 = Color3.fromRGB(16, 18, 24)
+                frame.BackgroundTransparency = 0.12
+                frame.BorderSizePixel = 0
+                local corner = Instance.new("UICorner")
+                corner.CornerRadius = UDim.new(0, 7)
+                corner.Parent = frame
+                local stroke = Instance.new("UIStroke")
+                stroke.Color = Color3.fromRGB(255, 210, 80)
+                stroke.Thickness = 1
+                stroke.Transparency = 0.45
+                stroke.Parent = frame
+
                 statusLbl = Instance.new("TextLabel")
-                statusLbl.Size = UDim2.new(0, 340, 0, 28)
-                statusLbl.Position = UDim2.new(0.5, -170, 0, 10)
-                statusLbl.BackgroundColor3 = Color3.fromRGB(18, 18, 24)
-                statusLbl.BackgroundTransparency = 0.15
+                statusLbl.Size = UDim2.new(1, -12, 0, 20)
+                statusLbl.Position = UDim2.new(0, 6, 0, 3)
+                statusLbl.BackgroundTransparency = 1
                 statusLbl.TextColor3 = Color3.fromRGB(255, 215, 90)
                 statusLbl.Font = Enum.Font.Code
                 statusLbl.TextSize = 13
                 statusLbl.Text = ""
-                local corner = Instance.new("UICorner")
-                corner.CornerRadius = UDim.new(0, 6)
-                corner.Parent = statusLbl
-                statusLbl.Parent = statusGui
+                statusLbl.Parent = frame
+
+                subLbl = Instance.new("TextLabel")
+                subLbl.Size = UDim2.new(1, -12, 0, 18)
+                subLbl.Position = UDim2.new(0, 6, 0, 22)
+                subLbl.BackgroundTransparency = 1
+                subLbl.TextColor3 = Color3.fromRGB(130, 235, 170)
+                subLbl.Font = Enum.Font.Code
+                subLbl.TextSize = 12
+                subLbl.Text = ""
+                subLbl.Parent = frame
+
+                frame.Parent = statusGui
                 statusGui.Parent = parent
+
+                hbConn = game:GetService("RunService").Heartbeat:Connect(function(dt)
+                    if dt > maxDt then maxDt = dt end
+                    if dt > 0.100 then spikeCount = spikeCount + 1 end
+                    curFps = math.clamp(math.floor(1 / math.max(dt, 0.001) + 0.5), 1, 240)
+                    updatePill()
+                end)
             end
-            if statusLbl then
-                statusLbl.Text = "AK Fix v4 | " .. tostring(txt)
-            end
+            updatePill()
         end)
     end
 
-    setStatus("[1/6] Cleaning stale state & cache...")
+    setStatus("[1/6] Cleaning cache...")
     if task and task.wait then pcall(task.wait) end
 
     pcall(function()
@@ -110,11 +174,17 @@ do
     local s3Start = os.clock()
     local lastY = os.clock()
     local yCount = 0
-    local yieldTotal = 0
     local function _AKD()
+        if s3Done then return end
         s3Done = true
         pcall(function()
-            if statusGui then statusGui:Destroy(); statusGui = nil end
+            if hbConn then hbConn:Disconnect(); hbConn = nil end
+            setStatus("[6/6] Loaded!")
+            if statusGui then
+                task.delay(2.5, function()
+                    if statusGui then statusGui:Destroy(); statusGui = nil end
+                end)
+            end
         end)
     end
     local function _AKY()
@@ -136,16 +206,8 @@ do
             if task and task.wait then
                 yieldTotal = yieldTotal + 1
                 if yieldTotal % 8 == 0 then
-                    local uiCount = 0
-                    pcall(function()
-                        local ui = game:GetService("CoreGui"):FindFirstChild("AKAdmin2")
-                        if ui then uiCount = #ui:GetDescendants() end
-                    end)
-                    if uiCount > 0 then
-                        setStatus(string.format("[6/6] Building UI (%d items, yield #%d)", uiCount, yieldTotal))
-                    else
-                        setStatus(string.format("[5/6] Running VM (yield #%d)", yieldTotal))
-                    end
+                    local hasUi = game:GetService("CoreGui"):FindFirstChild("AKAdmin2") ~= nil
+                    setStatus(hasUi and "[6/6] Building UI..." or "[5/6] Running VM...")
                 end
                 local ok = pcall(task.wait)
                 if ok then
@@ -318,7 +380,7 @@ do
                 s3Done = false
                 s3Start = os.clock()
                 s3Thread = (coroutine and coroutine.running and coroutine.running()) or nil
-                setStatus("[4/6] Patching & compiling Stage 3...")
+                setStatus("[4/6] Compiling Stage 3...")
                 if task and task.wait then
                     pcall(task.wait)
                 end
@@ -361,7 +423,7 @@ do
         end
         local fn, err = oldLs(src, name)
         if isStage3 then
-            setStatus("[5/6] Starting Stage 3 VM...")
+            setStatus("[5/6] Running VM...")
             if task and task.wait then
                 pcall(task.wait)
             end
