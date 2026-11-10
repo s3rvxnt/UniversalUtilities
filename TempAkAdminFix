@@ -1,4 +1,4 @@
--- 2============================================================================
+-- ============================================================================
 -- UNIVERSAL EXECUTOR COMPATIBILITY & SLOW-CPU ANTI-FREEZE SHIM
 -- Fixes non-standard Luau debug.getinfo, debug.info, debug.traceback,
 -- read-only/frozen getfenv(0) & debug tables, Stage 2/3 environment checks,
@@ -27,50 +27,24 @@ do
     }
     g._AKP = _AKP
 
-    local _AKWT = setmetatable({}, {__mode = "k"})
-    local function _AKCW(f)
-        return coroutine.wrap(function(...)
-            local co = coroutine and coroutine.running and coroutine.running()
-            if co then _AKWT[co] = true end
-            return f(...)
-        end)
-    end
-    g._AKCW = _AKCW
-
-    local s3Done = false
-    local chEnd = nil
+    local s3Thread = nil
     local lastY = os.clock()
     local yCount = 0
-
-    local function _AKS()
-        s3Done = false
-        chEnd = nil
-        lastY = os.clock()
-        yCount = 0
-    end
-    local function _AKD()
-        chEnd = os.clock()
-    end
     local function _AKY()
-        if s3Done then return end
         yCount = yCount + 1
         if yCount % 64 ~= 0 then return end
-        local now = os.clock()
-        if chEnd and (now - chEnd > 10) then
-            s3Done = true
-            return
+        if not s3Thread and coroutine and coroutine.running then
+            s3Thread = coroutine.running()
         end
-        if now - lastY > 0.015 then
+        local now = os.clock()
+        if now - lastY > 0.02 then
             lastY = now
-            local co = coroutine and coroutine.running and coroutine.running()
-            if not (co and _AKWT[co]) and task and task.wait then
+            if (not s3Thread or (coroutine and coroutine.running and coroutine.running() == s3Thread)) and task and task.wait then
                 pcall(task.wait)
                 lastY = os.clock()
             end
         end
     end
-    g._AKS = _AKS
-    g._AKD = _AKD
     g._AKY = _AKY
 
     local targetDbg = rawDbg
@@ -79,7 +53,8 @@ do
         local isC = {
             [pcall]=true, [xpcall]=true, [string.byte]=true, [table.concat]=true,
             [table.pack or 0]=true, [math.floor]=true, [rawget]=true, [rawset]=true,
-            [oldLs or 0]=true, [origIsc or 0]=true, [buffer and buffer.readu8 or 0]=true
+            [oldLs or 0]=true, [origIsc or 0]=true, [buffer and buffer.readu8 or 0]=true,
+            [_AKY]=true
         }
         isC[0] = nil
 
@@ -199,9 +174,6 @@ do
         iscclosure = g.iscclosure,
         checkcaller = g.checkcaller,
         _AKP = _AKP,
-        _AKCW = _AKCW,
-        _AKS = _AKS,
-        _AKD = _AKD,
         _AKY = _AKY,
     }
 
@@ -214,29 +186,14 @@ do
                     :gsub("local (%w+)=(%w+)%[(%w+)%];", "local %1=(#%2==8886 and %2[8843])or %2[%3];", 1)
                     :gsub("((%w+)%[%((%w+)%+1%)%])=0%+%(%1%);", "%1=(%1==1e9 and 0)or(0+%1);")
             elseif src:find("elseif h==58 then K[W[U]]=K[z[U]]+K[o[U]]U+=1;", 1, true) then
-                _AKS()
+                s3Thread = (coroutine and coroutine.running and coroutine.running()) or nil
+                lastY = os.clock()
+                yCount = 0
                 src = src
-                    :gsub("^return setmetatable", "_AKS();local _AKR=setmetatable", 1)
-                    :gsub(":Ch%(%)%(%.%.%.%)$", ":Ch()(...);_AKD();return _AKR", 1)
-                    :gsub("%[55%]=coroutine%.wrap", "[55]=_AKCW", 1)
-                    :gsub(
-                        "my=function%(K,o,h,z,W,A,I,E,M,n,U%)if W<=3 then ",
-                        "my=function(K,o,h,z,W,A,I,E,M,n,U)if W<=3 then _AKY();",
-                        1
-                    )
                     :gsub("while U do if U<=", "while U do _AKY();if U<=")
                     :gsub(
                         "for (%w+)=1,L do local E=U%[209%]%(m,K%)",
                         "for %1=1,L do _AKY();local E=U[209](m,K)"
-                    )
-                    :gsub(
-                        "EK=function%(W,U,%.%.%.%)while U%[0%]do ",
-                        "EK=function(W,U,...)while U[0]do _AKY();",
-                        1
-                    )
-                    :gsub(
-                        "if (%w+==%d+) then while true do local ",
-                        "if %1 then while true do _AKY();local "
                     )
                     :gsub(
                         "elseif h==58 then K%[W%[U%]%]=K%[z%[U%]%]%+K%[o%[U%]%]U%+=1;",
@@ -252,9 +209,6 @@ do
             pcall(rawset, fenv, "debug", targetDbg)
             pcall(rawset, fenv, "loadstring", g.loadstring)
             pcall(rawset, fenv, "_AKP", _AKP)
-            pcall(rawset, fenv, "_AKCW", _AKCW)
-            pcall(rawset, fenv, "_AKS", _AKS)
-            pcall(rawset, fenv, "_AKD", _AKD)
             pcall(rawset, fenv, "_AKY", _AKY)
         end
         return fn, err
@@ -277,9 +231,6 @@ do
         rawset(origEnv, "iscclosure", g.iscclosure)
         rawset(origEnv, "loadstring", g.loadstring)
         rawset(origEnv, "_AKP", _AKP)
-        rawset(origEnv, "_AKCW", _AKCW)
-        rawset(origEnv, "_AKS", _AKS)
-        rawset(origEnv, "_AKD", _AKD)
         rawset(origEnv, "_AKY", _AKY)
     end)
 
