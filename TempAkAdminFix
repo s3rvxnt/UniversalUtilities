@@ -1,9 +1,12 @@
 -- ============================================================================
--- UNIVERSAL EXECUTOR COMPATIBILITY & SLOW-CPU ANTI-FREEZE SHIM (v5)
--- Includes built-in auto-disappearing diagnostic pill AND live AKAuthGui
--- loader hijack (real-time 0-100% progress bar, percentage, and UI module).
+-- UNIVERSAL EXECUTOR COMPATIBILITY & SLOW-CPU ANTI-FREEZE SHIM (v6)
+-- Fixes mobile/sandboxed executors (Delta, Codex, Vega X, Hydrogen, Solara,
+-- Madium, Helios, etc.) + built-in diagnostic pill + live AKAuthGui 0-100%
+-- progress bar hijack + on-pill compile/runtime error reporting.
 -- ============================================================================
 do
+    local callerEnv = getfenv and getfenv(1) or nil
+    local origEnv = getfenv and getfenv(0) or _G
     local g = (getgenv and getgenv()) or _G
     local c = newcclosure or function(...) return ... end
     local oldLs = g._AKOrigLs or g.loadstring or loadstring
@@ -41,7 +44,7 @@ do
     end
 
     -- Built-in live diagnostic pill + AKAuthGui live progress hijacker
-    local statusGui, statusLbl, subLbl, hbConn
+    local statusGui, pillStroke, statusLbl, subLbl, hbConn
     local t0 = os.clock()
     local lastY = t0
     local maxDt = 0
@@ -52,6 +55,7 @@ do
     local uiPhase = ""
     local lastUiCheck = 0
     local curStage = "[1/6] Init"
+    local hasError = false
 
     -- AKAuthGui hijack state
     local authGui, authCard, authStatusLbl, authPctLbl, authFill
@@ -217,7 +221,7 @@ do
 
     local function updatePill(dt)
         local now = os.clock()
-        if now - lastUiCheck > 0.12 then
+        if not hasError and (now - lastUiCheck > 0.12) then
             lastUiCheck = now
             pcall(function()
                 local ui = findGui("AKAdmin2")
@@ -249,21 +253,26 @@ do
                 end
             end)
         end
-        pcall(stepAuthHijack, dt)
+        if not hasError then
+            pcall(stepAuthHijack, dt)
+        end
         if not statusLbl or not subLbl then return end
-        local pctStr = (uiCount > 0 or authLatched)
+        local pctStr = (not hasError and (uiCount > 0 or authLatched))
             and string.format(" (%d%% | UI: %d)", math.floor(math.max(visPct, computeRawPct()) + 0.5), uiCount)
             or ""
-        statusLbl.Text = string.format("AK Fix v5 [%s] | %s%s", execName, curStage, pctStr)
+        statusLbl.Text = string.format("AK Fix v6 [%s] | %s%s", execName, curStage, pctStr)
         subLbl.Text = string.format(
             "%.1fs | FPS: %d | MaxLag: %.0fms | Spikes: %d | Yields: %d",
             now - t0, curFps, maxDt * 1000, spikeCount, yieldTotal
         )
-        subLbl.TextColor3 = (maxDt < 0.250) and Color3.fromRGB(130, 235, 170)
-            or ((maxDt < 1.0) and Color3.fromRGB(255, 205, 90) or Color3.fromRGB(255, 105, 105))
+        if not hasError then
+            subLbl.TextColor3 = (maxDt < 0.250) and Color3.fromRGB(130, 235, 170)
+                or ((maxDt < 1.0) and Color3.fromRGB(255, 205, 90) or Color3.fromRGB(255, 105, 105))
+        end
     end
 
     local function setStatus(txt)
+        if hasError then return end
         curStage = tostring(txt)
         pcall(function()
             if not statusGui then
@@ -280,25 +289,26 @@ do
                 statusGui.ResetOnSpawn = false
 
                 local frame = Instance.new("Frame")
-                frame.Size = UDim2.new(0, 440, 0, 44)
-                frame.Position = UDim2.new(0.5, -220, 0, 10)
+                frame.Size = UDim2.new(0, 460, 0, 44)
+                frame.Position = UDim2.new(0.5, -230, 0, 10)
                 frame.BackgroundColor3 = Color3.fromRGB(16, 18, 24)
                 frame.BackgroundTransparency = 0.12
                 frame.BorderSizePixel = 0
                 local corner = Instance.new("UICorner")
                 corner.CornerRadius = UDim.new(0, 7)
                 corner.Parent = frame
-                local stroke = Instance.new("UIStroke")
-                stroke.Color = Color3.fromRGB(255, 210, 80)
-                stroke.Thickness = 1
-                stroke.Transparency = 0.45
-                stroke.Parent = frame
+                pillStroke = Instance.new("UIStroke")
+                pillStroke.Color = Color3.fromRGB(255, 210, 80)
+                pillStroke.Thickness = 1
+                pillStroke.Transparency = 0.45
+                pillStroke.Parent = frame
 
                 statusLbl = Instance.new("TextLabel")
                 statusLbl.Size = UDim2.new(1, -12, 0, 20)
                 statusLbl.Position = UDim2.new(0, 6, 0, 3)
                 statusLbl.BackgroundTransparency = 1
                 statusLbl.TextColor3 = Color3.fromRGB(255, 215, 90)
+                statusLbl.TextTruncate = Enum.TextTruncate.AtEnd
                 statusLbl.Font = Enum.Font.Code
                 statusLbl.TextSize = 13
                 statusLbl.Text = ""
@@ -309,6 +319,7 @@ do
                 subLbl.Position = UDim2.new(0, 6, 0, 22)
                 subLbl.BackgroundTransparency = 1
                 subLbl.TextColor3 = Color3.fromRGB(130, 235, 170)
+                subLbl.TextTruncate = Enum.TextTruncate.AtEnd
                 subLbl.Font = Enum.Font.Code
                 subLbl.TextSize = 12
                 subLbl.Text = ""
@@ -323,12 +334,45 @@ do
                     if dt > 0.100 then spikeCount = spikeCount + 1 end
                     curFps = math.clamp(math.floor(1 / math.max(dt, 0.001) + 0.5), 1, 240)
                     updatePill(dt)
-                    if g.AKUI and g.AKUI.initDone and g._AKD then
+                    if not hasError and g.AKUI and g.AKUI.initDone and g._AKD then
                         g._AKD()
                     end
                 end)
             end
             updatePill(0.016)
+        end)
+    end
+
+    local s3Thread = nil
+    local s3Done = false
+    local s3Start = os.clock()
+    local yCount = 0
+
+    local function setError(err)
+        local clean = tostring(err or "Unknown error")
+            :gsub('^%[string ".-"%]:%d+:%s*', "")
+            :gsub("^.-:%d+:%s*", "")
+            :gsub("%s+", " ")
+        setStatus("ERR")
+        hasError = true
+        s3Done = true
+        curStage = "ERR: " .. clean
+        pcall(warn, "[AK Fix v6 Error]", err)
+        pcall(function()
+            if hbConn then hbConn:Disconnect(); hbConn = nil end
+            if pillStroke then
+                pillStroke.Color = Color3.fromRGB(255, 90, 90)
+                pillStroke.Transparency = 0.15
+            end
+            if statusLbl then
+                statusLbl.TextColor3 = Color3.fromRGB(255, 110, 110)
+            end
+            updatePill(0.016)
+            if statusGui and task and task.delay then
+                task.delay(15, function()
+                    if statusGui then statusGui:Destroy(); statusGui = nil end
+                end)
+            end
         end)
     end
 
@@ -341,17 +385,26 @@ do
             if existing then existing:Destroy() end
             g.AK_ADMIN_EXECUTED = nil
             g.AKUI = nil
+            if _G then
+                _G.AK_ADMIN_EXECUTED = nil
+                _G.AKUI = nil
+            end
         end
     end)
 
     pcall(function()
-        if isfile and readfile and delfile then
+        local isf = isfile or g.isfile
+        local rdf = readfile or g.readfile
+        local dlf = delfile or g.delfile
+        local isd = isfolder or g.isfolder
+        local lsf = listfiles or g.listfiles
+        if isf and rdf and dlf then
             local function checkJson(f)
-                if type(f) == "string" and f:find("%.json$") and isfile(f) then
-                    local ok, data = pcall(readfile, f)
+                if type(f) == "string" and f:find("%.json$") and isf(f) then
+                    local ok, data = pcall(rdf, f)
                     if ok and type(data) == "string" then
                         if #data == 0 or not (data:find("^%s*[{%[]") and data:find("[}%]]%s*$")) then
-                            pcall(delfile, f)
+                            pcall(dlf, f)
                         end
                     end
                 end
@@ -367,8 +420,8 @@ do
             }) do
                 checkJson(f)
             end
-            if isfolder and listfiles and isfolder("AK_ADMIN/lang") then
-                for _, f in ipairs(listfiles("AK_ADMIN/lang")) do
+            if isd and lsf and isd("AK_ADMIN/lang") then
+                for _, f in ipairs(lsf("AK_ADMIN/lang")) do
                     checkJson(f)
                 end
             end
@@ -388,10 +441,14 @@ do
     }
     g._AKP = _AKP
 
-    local s3Thread = nil
-    local s3Done = false
-    local s3Start = os.clock()
-    local yCount = 0
+    local function _AKS()
+        s3Done = false
+        s3Start = os.clock()
+        s3Thread = (coroutine and coroutine.running and coroutine.running()) or nil
+        yCount = 63
+        lastY = 0
+    end
+
     local function _AKD()
         if s3Done then return end
         s3Done = true
@@ -401,13 +458,14 @@ do
             pcall(stepAuthHijack, 1)
             if hbConn then hbConn:Disconnect(); hbConn = nil end
             setStatus("[6/6] Loaded!")
-            if statusGui then
+            if statusGui and task and task.delay then
                 task.delay(2.5, function()
                     if statusGui then statusGui:Destroy(); statusGui = nil end
                 end)
             end
         end)
     end
+
     local function _AKY()
         if s3Done then return end
         yCount = yCount + 1
@@ -442,8 +500,12 @@ do
             end
         end
     end
+    g._AKS = _AKS
     g._AKY = _AKY
     g._AKD = _AKD
+
+    g.checkcaller = g.checkcaller or c(function(...) return true end)
+    local getgenvFn = g.getgenv or getgenv or c(function() return g end)
 
     local targetDbg = rawDbg
     if type(rawDbg) == "table" then
@@ -453,7 +515,8 @@ do
             [pcall]=true, [xpcall]=true, [string.byte]=true, [table.concat]=true,
             [table.pack or 0]=true, [math.floor]=true, [rawget]=true, [rawset]=true,
             [oldLs or 0]=true, [origIsc or 0]=true, [buffer and buffer.readu8 or 0]=true,
-            [_AKY]=true, [_AKD]=true
+            [g.checkcaller]=true, [getgenvFn]=true,
+            [_AKS]=true, [_AKY]=true, [_AKD]=true
         }
         isC[0] = nil
 
@@ -571,26 +634,29 @@ do
         g.debug = targetDbg
     end
 
-    g.checkcaller = g.checkcaller or c(function(...) return true end)
-
-    local origEnv = getfenv(0)
     local env = {
         debug = targetDbg,
         iscclosure = g.iscclosure,
         checkcaller = g.checkcaller,
+        getgenv = getgenvFn,
         _AKP = _AKP,
+        _AKS = _AKS,
         _AKY = _AKY,
         _AKD = _AKD,
     }
 
+    local selfBindPrefix = "do local _e=(getgenv and getgenv()._AKEnv)or(_G and _G._AKEnv)or(shared and shared._AKEnv);if _e and setfenv then setfenv(1,_e)end end;"
+
     g.loadstring = function(...)
         local src, name = ...
+        local isStage2 = false
         local isStage3 = false
         if type(src) == "string" then
             if src:find("DecompressBuffer", 1, true) then
+                isStage2 = true
                 setStatus("[3/6] Decompressing Stage 2...")
                 if task and task.wait then pcall(task.wait) end
-                s3Thread = (coroutine and coroutine.running and coroutine.running()) or nil
+                s3Thread = nil
                 src = src
                     :gsub("=%(1/300%)", "=(1/100)")
                     :gsub("local (%w+)=(%w+)%[(%w+)%];", "local %1=(#%2==8886 and %2[8843])or %2[%3];", 1)
@@ -600,7 +666,7 @@ do
                 isStage3 = true
                 s3Done = false
                 s3Start = os.clock()
-                s3Thread = (coroutine and coroutine.running and coroutine.running()) or nil
+                s3Thread = nil
                 setStatus("[4/6] Compiling Stage 3...")
                 if task and task.wait then
                     pcall(task.wait)
@@ -615,8 +681,8 @@ do
                     src = src:sub(1, b1 - 1) .. ",y=_AKB," .. src:sub(e2 + 1)
                 end
                 src = src
-                    :gsub("^return setmetatable", "local _AKR=setmetatable", 1)
-                    :gsub(":Ch%(%)%(%.%.%.%)$", ":Ch()(...);_AKD();return _AKR", 1)
+                    :gsub("^return setmetatable", "_AKS();local _AKR=setmetatable", 1)
+                    :gsub(":Ch%(%)%(%.%.%.%)%s*$", ":Ch()(...);_AKD();return _AKR", 1)
                     :gsub("for o=1,#z,5 do ", "for o=1,#z,5 do if o%%200==1 then _AKY()end;", 1)
                     :gsub("while U do if U<=46", "while U do _AKY();if U<=46")
                     :gsub("else U%[90%]=U%[45%]U%[0%]=14386203;end;", "else _AKY();U[90]=U[45]U[0]=14386203;end;", 1)
@@ -642,7 +708,22 @@ do
                 end
             end
         end
-        local fn, err = oldLs(src, name)
+
+        local fn, err
+        if type(src) == "string" and (isStage2 or isStage3 or not s3Done) then
+            fn, err = oldLs(selfBindPrefix .. src, name)
+            if not fn then
+                fn, err = oldLs(src, name)
+            end
+        else
+            fn, err = oldLs(src, name)
+        end
+
+        if not fn and (isStage2 or isStage3) then
+            setError((isStage3 and "S3 Compile: " or "S2 Compile: ") .. tostring(err))
+            return nil, err
+        end
+
         if isStage3 then
             setStatus("[5/6] Running VM...")
             if task and task.wait then
@@ -656,15 +737,24 @@ do
             yCount = 63
             lastY = 0
         end
-        if fn then
-            pcall(setfenv, fn, env)
-            local fenv = getfenv(fn)
-            pcall(rawset, fenv, "debug", targetDbg)
-            pcall(rawset, fenv, "loadstring", g.loadstring)
-            pcall(rawset, fenv, "_AKP", _AKP)
-            pcall(rawset, fenv, "_AKY", _AKY)
-            pcall(rawset, fenv, "_AKD", _AKD)
-            pcall(rawset, fenv, "_AKB", g._AKB)
+
+        if fn and (isStage2 or isStage3 or not s3Done) then
+            if not pcall(setfenv, fn, env) then
+                local rawFn = fn
+                fn = function(...) return rawFn(...) end
+                pcall(setfenv, fn, env)
+            end
+            local okF, fenv = pcall(getfenv, fn)
+            if okF and type(fenv) == "table" then
+                pcall(rawset, fenv, "debug", targetDbg)
+                pcall(rawset, fenv, "loadstring", g.loadstring)
+                pcall(rawset, fenv, "getgenv", getgenvFn)
+                pcall(rawset, fenv, "_AKP", _AKP)
+                pcall(rawset, fenv, "_AKS", _AKS)
+                pcall(rawset, fenv, "_AKY", _AKY)
+                pcall(rawset, fenv, "_AKD", _AKD)
+                pcall(rawset, fenv, "_AKB", g._AKB)
+            end
         end
         return fn, err
     end
@@ -672,25 +762,49 @@ do
     env.loadstring = g.loadstring
     env.load = g.loadstring
     setmetatable(env, {
-        __index = origEnv,
+        __index = function(_, k)
+            local v = g[k]
+            if v ~= nil then return v end
+            if callerEnv then
+                v = callerEnv[k]
+                if v ~= nil then return v end
+            end
+            return origEnv[k]
+        end,
         __newindex = function(t, k, v)
             rawset(t, k, v)
-            pcall(function() origEnv[k] = v end)
             pcall(function() g[k] = v end)
+            pcall(function() origEnv[k] = v end)
         end
     })
+
+    g._AKEnv = env
+    pcall(function() if _G then _G._AKEnv = env end end)
+    pcall(function() if shared then shared._AKEnv = env end end)
 
     pcall(function()
         if setreadonly then setreadonly(origEnv, false) end
         rawset(origEnv, "debug", targetDbg)
         rawset(origEnv, "iscclosure", g.iscclosure)
         rawset(origEnv, "loadstring", g.loadstring)
+        rawset(origEnv, "_AKEnv", env)
         rawset(origEnv, "_AKP", _AKP)
+        rawset(origEnv, "_AKS", _AKS)
         rawset(origEnv, "_AKY", _AKY)
         rawset(origEnv, "_AKD", _AKD)
     end)
 
     setStatus("[2/6] Fetching AKADMIN.lua...")
     if task and task.wait then pcall(task.wait) end
-    g.loadstring(game:HttpGet("https://absent.wtf/AKADMIN.lua"))()
+    local okRun, runErr = pcall(function()
+        local s1Src = game:HttpGet("https://absent.wtf/AKADMIN.lua")
+        local s1Fn, s1Err = g.loadstring(s1Src)
+        if not s1Fn then
+            error("S1 Compile: " .. tostring(s1Err))
+        end
+        return s1Fn()
+    end)
+    if not okRun then
+        setError(runErr)
+    end
 end
