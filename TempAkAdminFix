@@ -25,24 +25,30 @@ do
     -- Built-in live diagnostic pill (auto-destroys once AKAdmin2 finishes loading)
     local statusGui, statusLbl, subLbl, hbConn
     local t0 = os.clock()
+    local lastY = t0
     local maxDt = 0
     local curFps = 60
     local spikeCount = 0
     local yieldTotal = 0
+    local uiCount = 0
+    local lastUiCheck = 0
     local curStage = "[1/6] Init"
 
     local function updatePill()
         if not statusLbl or not subLbl then return end
-        local uiCount = 0
-        pcall(function()
-            local ui = game:GetService("CoreGui"):FindFirstChild("AKAdmin2")
-            if ui then uiCount = #ui:GetDescendants() end
-        end)
+        local now = os.clock()
+        if now - lastUiCheck > 0.25 then
+            lastUiCheck = now
+            pcall(function()
+                local ui = game:GetService("CoreGui"):FindFirstChild("AKAdmin2")
+                if ui then uiCount = #ui:GetDescendants() end
+            end)
+        end
         local uiStr = uiCount > 0 and string.format(" (UI: %d)", uiCount) or ""
         statusLbl.Text = string.format("AK Fix v4 [%s] | %s%s", execName, curStage, uiStr)
         subLbl.Text = string.format(
             "%.1fs | FPS: %d | MaxLag: %.0fms | Spikes: %d | Yields: %d",
-            os.clock() - t0, curFps, maxDt * 1000, spikeCount, yieldTotal
+            now - t0, curFps, maxDt * 1000, spikeCount, yieldTotal
         )
         subLbl.TextColor3 = (maxDt < 0.250) and Color3.fromRGB(130, 235, 170)
             or ((maxDt < 1.0) and Color3.fromRGB(255, 205, 90) or Color3.fromRGB(255, 105, 105))
@@ -103,6 +109,7 @@ do
                 statusGui.Parent = parent
 
                 hbConn = game:GetService("RunService").Heartbeat:Connect(function(dt)
+                    lastY = os.clock()
                     if dt > maxDt then maxDt = dt end
                     if dt > 0.100 then spikeCount = spikeCount + 1 end
                     curFps = math.clamp(math.floor(1 / math.max(dt, 0.001) + 0.5), 1, 240)
@@ -172,7 +179,6 @@ do
     local s3Thread = nil
     local s3Done = false
     local s3Start = os.clock()
-    local lastY = os.clock()
     local yCount = 0
     local function _AKD()
         if s3Done then return end
