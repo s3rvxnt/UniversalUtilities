@@ -1,7 +1,8 @@
 -- ============================================================================
--- UNIVERSAL EXECUTOR COMPATIBILITY SHIM (Madium / Helios / Real / Solara)
+-- UNIVERSAL EXECUTOR COMPATIBILITY & SLOW-CPU ANTI-FREEZE SHIM
 -- Fixes non-standard Luau debug.getinfo, debug.info, debug.traceback,
--- read-only/frozen getfenv(0) & debug tables, and Stage 2/3 environment checks
+-- read-only/frozen getfenv(0) & debug tables, Stage 2/3 environment checks,
+-- and prevents ScriptTimeout freezes on slow CPUs / mobile devices.
 -- ============================================================================
 do
     local g = (getgenv and getgenv()) or _G
@@ -26,13 +27,35 @@ do
     }
     g._AKP = _AKP
 
+    local s3Thread = nil
+    local lastY = os.clock()
+    local _AKY = c(function()
+        if not s3Thread and coroutine and coroutine.running then
+            s3Thread = coroutine.running()
+        end
+        if g._AKSimSlowCPU and (not g._AKSimUntil or os.clock() < g._AKSimUntil) then
+            local t = os.clock()
+            while os.clock() - t < g._AKSimSlowCPU do end
+        end
+        local now = os.clock()
+        if now - lastY > 0.015 then
+            lastY = now
+            if (not s3Thread or coroutine.running() == s3Thread) and task and task.wait then
+                pcall(task.wait)
+                lastY = os.clock()
+            end
+        end
+    end)
+    g._AKY = _AKY
+
     local targetDbg = rawDbg
     if type(rawDbg) == "table" then
         local gi, inf, tb = rawDbg.getinfo, rawDbg.info, rawDbg.traceback
         local isC = {
             [pcall]=true, [xpcall]=true, [string.byte]=true, [table.concat]=true,
             [table.pack or 0]=true, [math.floor]=true, [rawget]=true, [rawset]=true,
-            [oldLs or 0]=true, [origIsc or 0]=true, [buffer and buffer.readu8 or 0]=true
+            [oldLs or 0]=true, [origIsc or 0]=true, [buffer and buffer.readu8 or 0]=true,
+            [_AKY]=true
         }
         isC[0] = nil
 
@@ -160,16 +183,27 @@ do
         if type(src) == "string" then
             if src:find("DecompressBuffer", 1, true) then
                 src = src
-                    :gsub("=%(1/300%)", "=(9e9)")
-                    :gsub("=%(1/240%)", "=(9e9)")
                     :gsub("local (%w+)=(%w+)%[(%w+)%];", "local %1=(#%2==8886 and %2[8843])or %2[%3];", 1)
                     :gsub("((%w+)%[%((%w+)%+1%)%])=0%+%(%1%);", "%1=(%1==1e9 and 0)or(0+%1);")
             elseif src:find("elseif h==58 then K[W[U]]=K[z[U]]+K[o[U]]U+=1;", 1, true) then
-                src = src:gsub(
-                    "elseif h==58 then K%[W%[U%]%]=K%[z%[U%]%]%+K%[o%[U%]%]U%+=1;",
-                    "elseif h==58 then K[W[U]]=K[z[U]]+(_AKP[K[o[U]]]or K[o[U]])U+=1;",
-                    1
-                )
+                s3Thread = nil
+                lastY = os.clock()
+                src = src
+                    :gsub(
+                        "my=function%(K,o,h,z,W,A,I,E,M,n,U%)if W<=3 then ",
+                        "my=function(K,o,h,z,W,A,I,E,M,n,U)if W<=3 then _AKY();",
+                        1
+                    )
+                    :gsub(
+                        "for O=1,L do local E=U%[209%]%(m,K%)",
+                        "for O=1,L do _AKY();local E=U[209](m,K)",
+                        1
+                    )
+                    :gsub(
+                        "elseif h==58 then K%[W%[U%]%]=K%[z%[U%]%]%+K%[o%[U%]%]U%+=1;",
+                        "elseif h==58 then _AKY();K[W[U]]=K[z[U]]+(_AKP[K[o[U]]]or K[o[U]])U+=1;",
+                        1
+                    )
             end
         end
         local fn, err = oldLs(src, name)
@@ -178,6 +212,7 @@ do
             pcall(rawset, getfenv(fn), "debug", targetDbg)
             pcall(rawset, getfenv(fn), "loadstring", g.loadstring)
             pcall(rawset, getfenv(fn), "_AKP", _AKP)
+            pcall(rawset, getfenv(fn), "_AKY", _AKY)
         end
         return fn, err
     end)
@@ -188,6 +223,7 @@ do
     env.loadstring = g.loadstring
     env.load = g.loadstring
     env._AKP = _AKP
+    env._AKY = _AKY
     setmetatable(env, {
         __index = function(_, k)
             local v = g[k]
@@ -206,6 +242,7 @@ do
         rawset(origEnv, "iscclosure", g.iscclosure)
         rawset(origEnv, "loadstring", g.loadstring)
         rawset(origEnv, "_AKP", _AKP)
+        rawset(origEnv, "_AKY", _AKY)
     end)
     pcall(setfenv, 0, env)
     pcall(setfenv, 1, env)
