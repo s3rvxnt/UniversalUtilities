@@ -82,7 +82,7 @@ do
 
     local function updateBudget(sleepGap, totalDt)
         if not isFocused then
-            dynBudget = 0.024
+            dynBudget = 0.016
             return
         end
         if sleepGap > 0.0002 and sleepGap < 0.200 then
@@ -243,23 +243,24 @@ do
             authDbgLbl.TextSize = 8
             authDbgLbl.TextScaled = false
             authDbgLbl.TextWrapped = false
-            authDbgLbl.TextTruncate = Enum.TextTruncate.AtEnd
             authDbgLbl.TextXAlignment = Enum.TextXAlignment.Left
             authDbgLbl.TextYAlignment = Enum.TextYAlignment.Center
-            authDbgLbl.Position = UDim2.new(
-                0,
-                track.Position.X.Offset,
-                0,
-                track.Position.Y.Offset + track.Size.Y.Offset + 3
-            )
-            authDbgLbl.Size = UDim2.new(
-                1,
-                -(track.Position.X.Offset * 2),
-                0,
-                11
-            )
             authDbgLbl.Parent = card
         end
+        authDbgLbl.TextTruncate = Enum.TextTruncate.None
+        authDbgLbl.AnchorPoint = track.AnchorPoint
+        authDbgLbl.Position = UDim2.new(
+            track.Position.X.Scale,
+            track.Position.X.Offset,
+            track.Position.Y.Scale,
+            track.Position.Y.Offset + track.Size.Y.Offset + 3
+        )
+        authDbgLbl.Size = UDim2.new(
+            track.Size.X.Scale,
+            track.Size.X.Offset,
+            0,
+            11
+        )
 
         authDbgLbl2 = card:FindFirstChild("_AKDbg2")
         if not authDbgLbl2 then
@@ -270,41 +271,48 @@ do
             authDbgLbl2.TextSize = 8
             authDbgLbl2.TextScaled = false
             authDbgLbl2.TextWrapped = false
-            authDbgLbl2.TextTruncate = Enum.TextTruncate.AtEnd
             authDbgLbl2.TextXAlignment = Enum.TextXAlignment.Left
             authDbgLbl2.TextYAlignment = Enum.TextYAlignment.Center
-            authDbgLbl2.Position = UDim2.new(
-                0,
-                track.Position.X.Offset,
-                0,
-                track.Position.Y.Offset + track.Size.Y.Offset + 15
-            )
-            authDbgLbl2.Size = UDim2.new(
-                1,
-                -(track.Position.X.Offset * 2),
-                0,
-                11
-            )
             authDbgLbl2.Parent = card
         end
+        authDbgLbl2.TextTruncate = Enum.TextTruncate.None
+        authDbgLbl2.AnchorPoint = track.AnchorPoint
+        authDbgLbl2.Position = UDim2.new(
+            track.Position.X.Scale,
+            track.Position.X.Offset,
+            track.Position.Y.Scale,
+            track.Position.Y.Offset + track.Size.Y.Offset + 15
+        )
+        authDbgLbl2.Size = UDim2.new(
+            track.Size.X.Scale,
+            track.Size.X.Offset,
+            0,
+            11
+        )
 
         local now = os.clock()
-        local shortAk = (#lastAkKey > 9) and lastAkKey:sub(1, 9) or lastAkKey
-        local shortNode = (#lastUiNode > 12) and lastUiNode:sub(1, 12) or lastUiNode
+        local shortExec = (#execName > 12) and execName:sub(1, 12) or execName
+        local shortAk = (#lastAkKey > 8) and lastAkKey:sub(1, 8) or lastAkKey
         authDbgLbl.TextTransparency = lbl.TextTransparency
         authDbgLbl.TextColor3 = (maxDt < 0.250) and Color3.fromRGB(130, 235, 170)
             or ((maxDt < 1.0) and Color3.fromRGB(255, 205, 90) or Color3.fromRGB(255, 105, 105))
         authDbgLbl.Text = string.format(
             "AKPlus [%s] | %.1fs | %dFPS | Bdg:%.1fms(S:%d) | Lag:%.0fms(x%d)",
-            execName, now - t0, curFps, dynBudget * 1000, dynStride, maxDt * 1000, spikeCount
+            shortExec, now - t0, curFps, dynBudget * 1000, dynStride, maxDt * 1000, spikeCount
         )
 
         authDbgLbl2.TextTransparency = lbl.TextTransparency
         authDbgLbl2.TextColor3 = Color3.fromRGB(150, 205, 255)
-        authDbgLbl2.Text = string.format(
-            "Yld:%d | VM:%s | %s | AK:%d(%s) | C:%d | UI:%d(%s)",
-            yieldTotal, fmtCount(yCount), lastCheckpoint, akKeyCount, shortAk, akConnCount, uiCount, shortNode
+        local l2Prefix = string.format(
+            "Yld:%d | VM:%s | %s | AK:%d(%s) | C:%d | UI:%d",
+            yieldTotal, fmtCount(yCount), lastCheckpoint, akKeyCount, shortAk, akConnCount, uiCount
         )
+        local rem = 72 - #l2Prefix - 2
+        if rem >= 3 and lastUiNode ~= "-" then
+            authDbgLbl2.Text = l2Prefix .. "(" .. lastUiNode:sub(1, rem) .. ")"
+        else
+            authDbgLbl2.Text = l2Prefix
+        end
 
         if not authLatched then
             local txt = lbl.Text or ""
@@ -434,7 +442,7 @@ do
                 end
                 local ui = findGui("AKAdmin2")
                 if ui then
-                    lastCheckpoint = "S3-BuildUI"
+                    lastCheckpoint = "S3-UI"
                     local desc = ui:GetDescendants()
                     uiCount = #desc
                     local kids = ui:GetChildren()
@@ -442,8 +450,14 @@ do
                     local leaf = desc[#desc]
                     if lastKid then
                         local kn = lastKid.Name
+                        local shortKn = kn
+                            :gsub("PanelHolder", "Pnl")
+                            :gsub("CmdBarHolder", "CmdBar")
+                            :gsub("CmdListHolder", "CmdLst")
+                            :gsub("DynamicIsland", "Island")
+                            :gsub("InfoHolder", "Info")
                         local ln = (leaf and leaf ~= lastKid and leaf.Name or "")
-                        local nodeStr = (ln ~= "" and (kn .. ">" .. ln) or kn)
+                        local nodeStr = (ln ~= "" and (shortKn .. ">" .. ln) or shortKn)
                         if #nodeStr > 20 then
                             nodeStr = nodeStr:sub(1, 20)
                         end
