@@ -44,7 +44,7 @@ do
     end
 
     -- Built-in live diagnostic pill + AKAuthGui live progress hijacker
-    local statusGui, pillStroke, statusLbl, subLbl, hbConn
+    local statusGui, statusFrame, pillStroke, statusLbl, subLbl, hbConn
     local t0 = os.clock()
     local lastY = t0
     local maxDt = 0
@@ -58,7 +58,7 @@ do
     local hasError = false
 
     -- AKAuthGui hijack state
-    local authGui, authCard, authStatusLbl, authPctLbl, authFill
+    local authGui, authCard, authStatusLbl, authPctLbl, authDbgLbl, authFill
     local authLatched = false
     local authBaseText = "Loading AK ADMIN"
     local latchYield = 0
@@ -91,31 +91,91 @@ do
     end
 
     local function stepAuthHijack(dt)
+        local ag = findGui("AKAuthGui")
+        if not ag then
+            return
+        end
+
+        local card
+        for _, ch in ipairs(ag:GetChildren()) do
+            if ch:IsA("Frame") and ch.Size.X.Offset >= 300 then
+                card = ch
+                break
+            end
+        end
+        if not card then return end
+
+        local track, lbl
+        for _, ch in ipairs(card:GetChildren()) do
+            if ch:IsA("Frame") and ch.Size.Y.Offset >= 2 and ch.Size.Y.Offset <= 6
+                and ch.Position.Y.Offset >= 90 and ch.Position.Y.Offset <= 120 then
+                track = ch
+            elseif ch:IsA("TextLabel") and ch.Name ~= "_AKPct" and ch.Name ~= "_AKDbg"
+                and ch.Position.Y.Offset >= 65 and ch.Position.Y.Offset <= 106 then
+                lbl = ch
+            end
+        end
+        local fill = track and track:FindFirstChildWhichIsA("Frame")
+        if not lbl or not fill then return end
+
+        -- Hide top debug pill while AKAuthGui is visible and render debug stats inside AKAuthGui card
+        if statusFrame and not hasError then
+            statusFrame.Visible = false
+        end
+
+        if not card:GetAttribute("_AKNudged") then
+            card:SetAttribute("_AKNudged", true)
+            lbl.Position = UDim2.new(
+                lbl.Position.X.Scale,
+                lbl.Position.X.Offset,
+                lbl.Position.Y.Scale,
+                lbl.Position.Y.Offset - 5
+            )
+            track.Position = UDim2.new(
+                track.Position.X.Scale,
+                track.Position.X.Offset,
+                track.Position.Y.Scale,
+                track.Position.Y.Offset - 5
+            )
+        end
+
+        authDbgLbl = card:FindFirstChild("_AKDbg")
+        if not authDbgLbl then
+            authDbgLbl = Instance.new("TextLabel")
+            authDbgLbl.Name = "_AKDbg"
+            authDbgLbl.BackgroundTransparency = 1
+            authDbgLbl.Font = Enum.Font.Code
+            authDbgLbl.TextSize = 11
+            authDbgLbl.TextScaled = true
+            authDbgLbl.TextXAlignment = Enum.TextXAlignment.Left
+            authDbgLbl.TextYAlignment = Enum.TextYAlignment.Center
+            authDbgLbl.Position = UDim2.new(
+                0,
+                track.Position.X.Offset,
+                0,
+                track.Position.Y.Offset + track.Size.Y.Offset + 4
+            )
+            authDbgLbl.Size = UDim2.new(
+                1,
+                -(track.Position.X.Offset * 2),
+                0,
+                13
+            )
+            local tc = Instance.new("UITextSizeConstraint")
+            tc.MaxTextSize = 11
+            tc.MinTextSize = 8
+            tc.Parent = authDbgLbl
+            authDbgLbl.Parent = card
+        end
+        authDbgLbl.TextTransparency = lbl.TextTransparency
+        authDbgLbl.TextColor3 = (maxDt < 0.250) and Color3.fromRGB(130, 235, 170)
+            or ((maxDt < 1.0) and Color3.fromRGB(255, 205, 90) or Color3.fromRGB(255, 105, 105))
+        authDbgLbl.Text = string.format(
+            "AK Fix v8 [%s] | %.1fs | FPS: %d | MaxLag: %.0fms | Spikes: %d | Yields: %d | UI: %d",
+            execName, os.clock() - t0, curFps, maxDt * 1000, spikeCount, yieldTotal, uiCount
+        )
+
         if not authLatched then
-            local ag = findGui("AKAuthGui")
-            if not ag then return end
-            local card
-            for _, ch in ipairs(ag:GetChildren()) do
-                if ch:IsA("Frame") and ch.Size.X.Offset >= 300 then
-                    card = ch
-                    break
-                end
-            end
-            if not card then return end
-
-            local track, lbl
-            for _, ch in ipairs(card:GetChildren()) do
-                if ch:IsA("Frame") and ch.Size.Y.Offset >= 2 and ch.Size.Y.Offset <= 6
-                    and ch.Position.Y.Offset >= 95 and ch.Position.Y.Offset <= 120 then
-                    track = ch
-                elseif ch:IsA("TextLabel") and ch.Name ~= "_AKPct"
-                    and ch.Position.Y.Offset >= 70 and ch.Position.Y.Offset <= 106 then
-                    lbl = ch
-                end
-            end
-            local fill = track and track:FindFirstChildWhichIsA("Frame")
-            if not lbl or not fill then return end
-
             local txt = lbl.Text or ""
             local hasBrand = txt:upper():find("AK ADMIN", 1, true) ~= nil
             if hasBrand or (uiCount > 0 and card.Size.Y.Offset < 220) then
@@ -293,10 +353,11 @@ do
 
                 local frame = Instance.new("Frame")
                 frame.Size = UDim2.new(0, 460, 0, 44)
-                frame.Position = UDim2.new(0.5, -230, 0, 10)
+                frame.Position = UDim2.new(0.5, -230, 0, 64)
                 frame.BackgroundColor3 = Color3.fromRGB(16, 18, 24)
                 frame.BackgroundTransparency = 0.12
                 frame.BorderSizePixel = 0
+                statusFrame = frame
                 local corner = Instance.new("UICorner")
                 corner.CornerRadius = UDim.new(0, 7)
                 corner.Parent = frame
@@ -367,6 +428,9 @@ do
         pcall(warn, "[AK Fix v8 Error]", err)
         pcall(function()
             if hbConn then hbConn:Disconnect(); hbConn = nil end
+            if statusFrame then
+                statusFrame.Visible = true
+            end
             if pillStroke then
                 pillStroke.Color = Color3.fromRGB(255, 90, 90)
                 pillStroke.Transparency = 0.15
@@ -464,9 +528,13 @@ do
             visPct = 100
             pcall(stepAuthHijack, 1)
             if hbConn then hbConn:Disconnect(); hbConn = nil end
+            if statusFrame then
+                statusFrame.Position = UDim2.new(0.5, -230, 0, 64)
+                statusFrame.Visible = true
+            end
             setStatus("[6/6] Loaded!")
             if statusGui and task and task.delay then
-                task.delay(2.5, function()
+                task.delay(4, function()
                     if statusGui then statusGui:Destroy(); statusGui = nil end
                 end)
             end
