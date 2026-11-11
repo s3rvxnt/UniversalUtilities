@@ -1,13 +1,16 @@
 -- ============================================================================
--- AKPlus: UNIVERSAL EXECUTOR SHIM & DYNAMIC ANTI-FREEZE GOVERNOR (v8.1)
+-- AKPlus: UNIVERSAL EXECUTOR SHIM & DYNAMIC ANTI-FREEZE GOVERNOR (v8.2)
 -- Fixes mobile/sandboxed executors (Delta, Codex, Vega X, Hydrogen, Solara,
 -- Xeno, Madium, Helios, Potassium, etc.) + OmniTaskManager-aware dynamic
--- frame-budget & auto-stride governor + AKAuthGui 0-100% progress & telemetry.
+-- frame-budget & auto-stride governor + sub-command VM cache + English trHook
+-- fast-bypass + scoped !antivcban + FE !invis + !reexecute/!rj persistence.
 -- ============================================================================
 do
     local callerEnv = getfenv and getfenv(1) or nil
     local origEnv = getfenv and getfenv(0) or _G
     local g = (getgenv and getgenv()) or _G
+    g._AKPlusServerBoot = tostring(game.PlaceId) .. ":" .. tostring(game.JobId)
+    g._AKPlusTeleportQueued = false
     local c = newcclosure or function(...) return ... end
     local oldLs = g._AKOrigLs or g.loadstring or loadstring
     local origIsc = g._AKOrigIsc or g.iscclosure or iscclosure
@@ -421,12 +424,51 @@ do
         end
     end
 
+    local function patchAkTranslator(ak)
+        if type(ak) ~= "table" then return end
+        if type(ak.trHook) == "function" and ak.trHook ~= g._AKWrappedTrHook then
+            g._AKOrigTrHook = ak.trHook
+            local orig = ak.trHook
+            local wrapped = function(inst, ...)
+                local lang = (type(ak.prefs) == "table" and ak.prefs.lang) or "en"
+                if lang == "en" then
+                    if ak.trLibOn then ak.trLibOn = false end
+                    return nil
+                end
+                if not ak.trLibOn then ak.trLibOn = true end
+                return orig(inst, ...)
+            end
+            g._AKWrappedTrHook = wrapped
+            ak.trHook = wrapped
+        end
+        if type(ak.trLiveCand) == "function" and ak.trLiveCand ~= g._AKWrappedTrLive then
+            g._AKOrigTrLive = ak.trLiveCand
+            local orig = ak.trLiveCand
+            local emptyTbl = {}
+            local wrapped = function(...)
+                local lang = (type(ak.prefs) == "table" and ak.prefs.lang) or "en"
+                if lang == "en" then
+                    return emptyTbl
+                end
+                return orig(...)
+            end
+            g._AKWrappedTrLive = wrapped
+            ak.trLiveCand = wrapped
+        end
+        local lang = (type(ak.prefs) == "table" and ak.prefs.lang) or "en"
+        if lang == "en" and ak.trLibOn == true then
+            ak.trLibOn = false
+        end
+    end
+    g._AKPatchTranslator = patchAkTranslator
+
     local function updatePill(dt)
         local now = os.clock()
         if not hasError and (now - lastUiCheck > 0.035) then
             lastUiCheck = now
             pcall(function()
                 if type(g.AKUI) == "table" then
+                    patchAkTranslator(g.AKUI)
                     local kc = 0
                     for k, _ in pairs(g.AKUI) do
                         kc = kc + 1
@@ -986,12 +1028,166 @@ do
         g.debug = targetDbg
     end
 
+    -- Teleport persistence helper + scoped CoreGui proxy for fast vcRun/vcBuild scans
+    local AKPLUS_TELEPORT_CODE = [[
+task.spawn(function()
+    if not game:IsLoaded() then game.Loaded:Wait() end
+    local g = (getgenv and getgenv()) or _G
+    local sig = tostring(game.PlaceId) .. ":" .. tostring(game.JobId)
+    if g._AKPlusServerBoot == sig then return end
+    g._AKPlusServerBoot = sig
+    local urls = {
+        g._AKPlusUrl,
+        "https://raw.githubusercontent.com/s3rvxnt/UniversalUtilities/main/AKPlus",
+        "https://raw.githubusercontent.com/s3rvxnt/UniversalUtilities/main/TempAkAdminFix",
+    }
+    local ls = g._AKOrigLs or g.loadstring or loadstring
+    for i = 1, 3 do
+        local u = urls[i]
+        if type(u) == "string" and #u > 10 then
+            local ok, src = pcall(game.HttpGet, game, u)
+            if ok and type(src) == "string" and #src > 1000 and src:find("AKPlus", 1, true) then
+                local fn = ls and ls(src)
+                if fn then pcall(fn); return end
+            end
+        end
+    end
+end)
+]]
+    local rawQot = g._AKOrigQot
+        or queue_on_teleport
+        or queueonteleport
+        or (syn and syn.queue_on_teleport)
+        or (fluxus and fluxus.queue_on_teleport)
+        or g.queue_on_teleport
+        or g.queueonteleport
+    if rawQot and not g._AKOrigQot then
+        g._AKOrigQot = rawQot
+    end
+
+    local function queueAKPlusOnce()
+        if g._AKPlusTeleportQueued then return true end
+        local qfn = g._AKOrigQot or rawQot
+        if type(qfn) == "function" then
+            g._AKPlusTeleportQueued = true
+            pcall(qfn, AKPLUS_TELEPORT_CODE)
+            return true
+        end
+        return false
+    end
+    g._AKQueueTeleport = queueAKPlusOnce
+
+    local wrappedQot = rawQot and function(code, ...)
+        if type(code) == "string" and code:find("AKADMIN", 1, true) then
+            queueAKPlusOnce()
+            return
+        end
+        return rawQot(code, ...)
+    end or nil
+
+    local vcThreads = g._AKVcThreads
+    if type(vcThreads) ~= "table" then
+        vcThreads = setmetatable({}, { __mode = "k" })
+        g._AKVcThreads = vcThreads
+    end
+
+    local function isVcScanActive()
+        if g._AKVcScanForce then return true end
+        if coroutine and coroutine.running then
+            local th = coroutine.running()
+            if th and vcThreads[th] then return true end
+        end
+        return false
+    end
+
+    local scopedCoreGuiProxy = setmetatable({ _isAKProxy = true }, {
+        __index = function(_, k)
+            if k == "GetDescendants" then
+                return function()
+                    local out = {}
+                    for _, child in ipairs(CoreGui:GetChildren()) do
+                        local nm = child.Name
+                        if nm ~= "AKAdmin2" and nm ~= "_AKFixStatus" and nm ~= "AKAuthGui" then
+                            out[#out + 1] = child
+                            for _, d in ipairs(child:GetDescendants()) do
+                                out[#out + 1] = d
+                            end
+                        end
+                    end
+                    return out
+                end
+            end
+            local v = CoreGui[k]
+            if type(v) == "function" then
+                return function(_, ...)
+                    return v(CoreGui, ...)
+                end
+            end
+            return v
+        end,
+        __newindex = function(_, k, v)
+            CoreGui[k] = v
+        end,
+    })
+
+    local realGame = game
+    local scopedGameProxy = setmetatable({ _isAKProxy = true }, {
+        __index = function(_, k)
+            if k == "GetService" or k == "FindService" then
+                return function(_, svcName)
+                    if svcName == "CoreGui" and isVcScanActive() then
+                        return scopedCoreGuiProxy
+                    end
+                    return realGame[k](realGame, svcName)
+                end
+            elseif k == "CoreGui" and isVcScanActive() then
+                return scopedCoreGuiProxy
+            end
+            local v = realGame[k]
+            if type(v) == "function" then
+                return function(_, ...)
+                    return v(realGame, ...)
+                end
+            end
+            return v
+        end,
+    })
+
+    local rawCloneref = g._AKOrigCloneref or g.cloneref or cloneref
+    if rawCloneref and not g._AKOrigCloneref then
+        g._AKOrigCloneref = rawCloneref
+    end
+    local safeCloneref = function(inst)
+        if type(inst) == "table" and inst._isAKProxy then
+            return inst
+        end
+        if rawCloneref then
+            local ok, res = pcall(rawCloneref, inst)
+            if ok and res ~= nil then return res end
+        end
+        return inst
+    end
+
+    local subCache = g._AKSubCache
+    local subCacheOrder = g._AKSubCacheOrder
+    if type(subCache) ~= "table" or type(subCacheOrder) ~= "table" then
+        subCache = {}
+        subCacheOrder = {}
+        g._AKSubCache = subCache
+        g._AKSubCacheOrder = subCacheOrder
+        g._AKSubCacheSeq = 0
+        g._AKSubCacheHits = 0
+    end
+
     local env = {
         debug = targetDbg,
         iscclosure = g.iscclosure,
         checkcaller = g.checkcaller,
         ypcall = g.ypcall,
         getgenv = getgenvFn,
+        cloneref = safeCloneref,
+        queue_on_teleport = wrappedQot,
+        queueonteleport = wrappedQot,
         _AKP = _AKP,
         _AKS = _AKS,
         _AKY = _AKY,
@@ -1006,6 +1202,7 @@ do
         local isStage2 = false
         local isStage3 = false
         local isSubVM = false
+        local subSig = nil
         local bVar, bVal
         local canYield = (rawTaskWait ~= nil or (task and task.wait ~= nil))
             and (not coroutine or not coroutine.isyieldable or coroutine.isyieldable())
@@ -1034,6 +1231,29 @@ do
                     if canYield then maybeYield(true) end
                 else
                     isSubVM = true
+                    local slen = #src
+                    local q1 = math.floor(slen * 0.25) + 1
+                    local q2 = math.floor(slen * 0.50) + 1
+                    local q3 = math.floor(slen * 0.75) + 1
+                    subSig = tostring(slen)
+                        .. "|" .. src:sub(1, 96)
+                        .. "|" .. src:sub(q1, q1 + 63)
+                        .. "|" .. src:sub(q2, q2 + 63)
+                        .. "|" .. src:sub(q3, q3 + 63)
+                        .. "|" .. src:sub(math.max(1, slen - 95), slen)
+                    local cached = subCache[subSig]
+                    if cached and type(cached.fn) == "function" then
+                        if cached.bVar then
+                            g[cached.bVar] = cached.bVal
+                            env[cached.bVar] = cached.bVal
+                            pcall(rawset, origEnv, cached.bVar, cached.bVal)
+                        end
+                        g._AKSubCacheHits = (g._AKSubCacheHits or 0) + 1
+                        local proto = cached.fn
+                        local wrapper = function(...) return proto(...) end
+                        pcall(setfenv, wrapper, env)
+                        return wrapper, nil
+                    end
                     if canYield then maybeYield(false) end
                 end
                 local b1, b2, bKey = src:find(",([%w_]+)=%[==%[")
@@ -1042,6 +1262,9 @@ do
                     bVal = src:sub(b2 + 1, e1 - 1)
                     if isStage3 then
                         bVar = "_AKB"
+                    elseif isSubVM then
+                        g._AKSubCacheSeq = (g._AKSubCacheSeq or 0) + 1
+                        bVar = "_AKBC_" .. tostring(g._AKSubCacheSeq)
                     else
                         subBlobIdx = (subBlobIdx % 4) + 1
                         bVar = "_AKB_" .. tostring(subBlobIdx)
@@ -1142,6 +1365,25 @@ do
                     pcall(rawset, fenv, bVar, bVal)
                 end
             end
+            if isSubVM and subSig and fn then
+                if #subCacheOrder >= 32 then
+                    local oldest = table.remove(subCacheOrder, 1)
+                    local ev = oldest and subCache[oldest]
+                    if ev then
+                        subCache[oldest] = nil
+                        if ev.bVar then
+                            g[ev.bVar] = nil
+                            env[ev.bVar] = nil
+                            pcall(rawset, origEnv, ev.bVar, nil)
+                        end
+                    end
+                end
+                subCache[subSig] = { fn = fn, bVar = bVar, bVal = bVal }
+                subCacheOrder[#subCacheOrder + 1] = subSig
+                local proto = fn
+                fn = function(...) return proto(...) end
+                pcall(setfenv, fn, env)
+            end
             if isSubVM and canYield then
                 maybeYield(false)
             end
@@ -1154,6 +1396,9 @@ do
     env.load = akLoadstring
     setmetatable(env, {
         __index = function(_, k)
+            if k == "game" and isVcScanActive() then
+                return scopedGameProxy
+            end
             local v = g[k]
             if v ~= nil then return v end
             if callerEnv then
@@ -1166,6 +1411,9 @@ do
             rawset(t, k, v)
             pcall(function() g[k] = v end)
             pcall(function() origEnv[k] = v end)
+            if k == "AKUI" and type(v) == "table" then
+                pcall(patchAkTranslator, v)
+            end
         end
     })
 
@@ -1190,12 +1438,18 @@ do
     local alreadyLoaded = (type(g.AKUI) == "table" and existingGui and existingGui:FindFirstChild("!jump", true) ~= nil)
     if alreadyLoaded then
         s3Loaded = true
+        pcall(patchAkTranslator, g.AKUI)
         for _, v in pairs(g.AKUI) do
             if type(v) == "function" then
                 local okF, fenv = pcall(getfenv, v)
                 if okF and type(fenv) == "table" then
                     pcall(rawset, fenv, "loadstring", akLoadstring)
                     pcall(rawset, fenv, "load", akLoadstring)
+                    pcall(rawset, fenv, "cloneref", safeCloneref)
+                    if wrappedQot then
+                        pcall(rawset, fenv, "queue_on_teleport", wrappedQot)
+                        pcall(rawset, fenv, "queueonteleport", wrappedQot)
+                    end
                     pcall(rawset, fenv, "_AKY", _AKY)
                     pcall(rawset, fenv, "_AKP", _AKP)
                 end
@@ -1779,11 +2033,200 @@ local function patchAKReanimSession()
 end
 
 -- ============================================================================
--- 3. !speed (!ws, !walkspeed, !unspeed) & !cfspeed (CFrame Speed + UI Slider)
+-- 3. !speed, !cfspeed, FE !invis / !uninvis, !antivcban Accelerator & Persistence
 -- ============================================================================
 local cfSpeedVal = 0
 local setWalkSpeedSliderUI = nil
 local setCfSpeedSliderUI = nil
+
+-- FE Seat-Weld Invisibility + 0.5 Ghost Preview state
+local invisActive = false
+local invisBusy = false
+local invisSeat = nil
+local invisWeld = nil
+local invisGhostConn = nil
+
+local function disableInvisible(snapToCurrent)
+    local wasActive = invisActive
+    invisActive = false
+    if invisGhostConn then
+        pcall(function() invisGhostConn:Disconnect() end)
+        invisGhostConn = nil
+    end
+    local char = LocalPlayer and LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    local returnCF = hrp and hrp.CFrame
+    if char then
+        for _, d in ipairs(char:GetDescendants()) do
+            if d:IsA("BasePart") or d:IsA("Decal") then
+                pcall(function() d.LocalTransparencyModifier = 0 end)
+            end
+        end
+    end
+    if invisWeld then
+        pcall(function() invisWeld:Destroy() end)
+        invisWeld = nil
+    end
+    if invisSeat then
+        pcall(function() invisSeat:Destroy() end)
+        invisSeat = nil
+    end
+    if wasActive and snapToCurrent and hrp and returnCF then
+        pcall(function()
+            hrp.CFrame = returnCF
+            hrp.AssemblyLinearVelocity = Vector3.zero
+            hrp.AssemblyAngularVelocity = Vector3.zero
+        end)
+    end
+end
+
+local function enableInvisible()
+    if invisBusy then return end
+    if invisActive then
+        disableInvisible(true)
+    end
+    local char = LocalPlayer and LocalPlayer.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not (char and hum and hrp and hum.Health > 0) then
+        return
+    end
+    invisBusy = true
+    local ok, err = pcall(function()
+        local originCF = hrp.CFrame
+        local hideY = math.clamp(originCF.Y + 3500, 2500, 9000)
+        local hideCF = CFrame.new(originCF.X, hideY, originCF.Z)
+
+        hrp.CFrame = hideCF
+        hrp.AssemblyLinearVelocity = Vector3.zero
+        hrp.AssemblyAngularVelocity = Vector3.zero
+        task.wait(0.15)
+
+        if not (char.Parent and hum.Parent and hum.Health > 0 and hrp.Parent) then
+            return
+        end
+
+        local seat = Instance.new("Seat")
+        seat.Name = "_AKInvisSeat"
+        seat.Size = Vector3.new(2, 0.2, 2)
+        seat.Transparency = 1
+        seat.CanCollide = false
+        seat.CanTouch = false
+        seat.CanQuery = false
+        seat.Disabled = true
+        seat.Massless = false
+        seat.CustomPhysicalProperties = PhysicalProperties.new(0.01, 0, 0, 0, 0)
+        seat.Anchored = false
+        seat.RootPriority = 127
+        seat.CFrame = hrp.CFrame
+        seat.Parent = Workspace
+
+        local targetLimb = char:FindFirstChild("Torso") or char:FindFirstChild("LowerTorso") or hrp
+        local weld = Instance.new("Weld")
+        weld.Name = "_AKInvisWeld"
+        weld.Part0 = seat
+        weld.Part1 = targetLimb
+        weld.C0 = seat.CFrame:ToObjectSpace(targetLimb.CFrame)
+        weld.Parent = seat
+
+        invisSeat = seat
+        invisWeld = weld
+        invisActive = true
+
+        RunService.Heartbeat:Wait()
+        if invisActive and seat.Parent and hrp.Parent then
+            seat.CFrame = originCF
+            hrp.CFrame = originCF
+            hrp.AssemblyLinearVelocity = Vector3.zero
+            hrp.AssemblyAngularVelocity = Vector3.zero
+        end
+
+        if invisGhostConn then
+            pcall(function() invisGhostConn:Disconnect() end)
+        end
+        invisGhostConn = RunService.RenderStepped:Connect(function()
+            if not invisActive or not char.Parent or not seat.Parent or hum.Health <= 0 then
+                disableInvisible(false)
+                return
+            end
+            for _, d in ipairs(char:GetDescendants()) do
+                if d:IsA("BasePart") and d.Name ~= "HumanoidRootPart" and d.Transparency < 1 then
+                    if d.LocalTransparencyModifier < 0.5 then
+                        d.LocalTransparencyModifier = 0.5
+                    end
+                elseif d:IsA("Decal") and d.Transparency < 1 then
+                    if d.LocalTransparencyModifier < 0.5 then
+                        d.LocalTransparencyModifier = 0.5
+                    end
+                end
+            end
+        end)
+    end)
+    invisBusy = false
+    if not ok then
+        pcall(warn, "[AKPlus !invis Error]", err)
+        disableInvisible(true)
+    end
+end
+
+if LocalPlayer then
+    trackConn(LocalPlayer.CharacterAdded:Connect(function()
+        if invisActive then
+            disableInvisible(false)
+        end
+    end))
+    if LocalPlayer.OnTeleport then
+        trackConn(LocalPlayer.OnTeleport:Connect(function()
+            if type(genv._AKQueueTeleport) == "function" then
+                pcall(genv._AKQueueTeleport)
+            end
+        end))
+    end
+end
+
+local function runAKPlusReload()
+    task.spawn(function()
+        if genv._AKReanimBoosterUnload then
+            pcall(genv._AKReanimBoosterUnload)
+        end
+        local ak = genv.AKUI
+        if type(ak) == "table" and type(ak.builtInFns) == "table" and type(ak.builtInFns["!destroy"]) == "function" then
+            pcall(ak.builtInFns["!destroy"])
+        end
+        pcall(function()
+            local g1 = findGui("AKAdmin2")
+            if g1 then g1:Destroy() end
+            local g2 = findGui("AKAuthGui")
+            if g2 then g2:Destroy() end
+        end)
+        genv.AK_ADMIN_EXECUTED = nil
+        genv.AKUI = nil
+        if _G then
+            _G.AK_ADMIN_EXECUTED = nil
+            _G.AKUI = nil
+        end
+        genv._AKPlusServerBoot = nil
+        local urls = {
+            genv._AKPlusUrl,
+            "https://raw.githubusercontent.com/s3rvxnt/UniversalUtilities/main/AKPlus",
+            "https://raw.githubusercontent.com/s3rvxnt/UniversalUtilities/main/TempAkAdminFix",
+        }
+        local ls = genv._AKOrigLs or genv.loadstring or loadstring
+        for i = 1, 3 do
+            local u = urls[i]
+            if type(u) == "string" and #u > 10 then
+                local ok, src = pcall(game.HttpGet, game, u)
+                if ok and type(src) == "string" and #src > 1000 and src:find("AKPlus", 1, true) then
+                    local fn = ls and ls(src)
+                    if fn then
+                        pcall(fn)
+                        return
+                    end
+                end
+            end
+        end
+    end)
+end
 
 local function applyWalkSpeedToHums(val)
     if not LocalPlayer then return end
@@ -1887,7 +2330,139 @@ local function patchMovementUIAndCommands()
     local ak = genv.AKUI
     if type(ak) ~= "table" then return false end
 
-    -- 3A. Register !speed, !ws, !walkspeed, !unspeed, !cfspeed, !cframespeed, !uncfspeed
+    local speedCmd = function(arg1)
+        if type(arg1) == "string" then
+            local lw = arg1:lower()
+            if lw == "off" or lw == "reset" or lw == "default" then
+                setWalkSpeed(nil, false)
+                return
+            end
+        end
+        local n = tonumber(arg1)
+        if not n then
+            ak.lastCmdErr = "Invalid number"
+            return
+        end
+        setWalkSpeed(math.clamp(n, 0, 1000), false)
+    end
+
+    local unspeedCmd = function()
+        setWalkSpeed(nil, false)
+    end
+
+    local cfSpeedCmd = function(arg1)
+        if arg1 == nil or arg1 == "" then
+            if cfSpeedVal > 0 then
+                setCfSpeed(0, false)
+            else
+                setCfSpeed(35, false)
+            end
+            return
+        end
+        if type(arg1) == "string" then
+            local lw = arg1:lower()
+            if lw == "off" or lw == "reset" or lw == "0" then
+                setCfSpeed(0, false)
+                return
+            end
+        end
+        local n = tonumber(arg1)
+        if not n then
+            ak.lastCmdErr = "Invalid number"
+            return
+        end
+        setCfSpeed(math.clamp(n, 0, 500), false)
+    end
+
+    local unCfSpeedCmd = function()
+        setCfSpeed(0, false)
+    end
+
+    local invisCmd = function(arg1)
+        if type(arg1) == "string" then
+            local lw = arg1:lower()
+            if lw == "off" or lw == "0" or lw == "false" then
+                disableInvisible(true)
+                return
+            elseif lw == "on" or lw == "1" or lw == "true" then
+                if not invisActive then
+                    task.spawn(enableInvisible)
+                end
+                return
+            end
+        end
+        if invisActive then
+            disableInvisible(true)
+        else
+            task.spawn(enableInvisible)
+        end
+    end
+
+    local unInvisCmd = function()
+        disableInvisible(true)
+    end
+
+    local reexecCmd = function()
+        runAKPlusReload()
+    end
+
+    local function installCmdEntries(cmds, meta)
+        if type(cmds) ~= "table" then return end
+        cmds["!speed"] = speedCmd
+        cmds["!ws"] = speedCmd
+        cmds["!walkspeed"] = speedCmd
+        cmds["!unspeed"] = unspeedCmd
+        cmds["!cfspeed"] = cfSpeedCmd
+        cmds["!cframespeed"] = cfSpeedCmd
+        cmds["!uncfspeed"] = unCfSpeedCmd
+        cmds["!invis"] = invisCmd
+        cmds["!invisible"] = invisCmd
+        cmds["!uninvis"] = unInvisCmd
+        cmds["!uninvisible"] = unInvisCmd
+        cmds["!vis"] = unInvisCmd
+        cmds["!visible"] = unInvisCmd
+        cmds["!reexecute"] = reexecCmd
+
+        for _, rjKey in ipairs({ "!rj", "!rejoin" }) do
+            local curFn = cmds[rjKey]
+            if type(curFn) == "function" and curFn ~= genv["_AKWrapped_" .. rjKey] then
+                if not genv["_AKOrigCmd_" .. rjKey] then
+                    genv["_AKOrigCmd_" .. rjKey] = curFn
+                end
+                local origRj = genv["_AKOrigCmd_" .. rjKey]
+                local wrappedRj = function(...)
+                    if type(genv._AKQueueTeleport) == "function" then
+                        pcall(genv._AKQueueTeleport)
+                    end
+                    return origRj(...)
+                end
+                genv["_AKWrapped_" .. rjKey] = wrappedRj
+                cmds[rjKey] = wrappedRj
+            end
+        end
+
+        if type(meta) == "table" then
+            meta["!speed"] = "Set character WalkSpeed [number, off]"
+            meta["!ws"] = "Set character WalkSpeed [number, off]"
+            meta["!walkspeed"] = "Set character WalkSpeed [number, off]"
+            meta["!unspeed"] = "Reset WalkSpeed back to normal"
+            meta["!cfspeed"] = "Set CFrame movement speed [number, off]"
+            meta["!cframespeed"] = "Set CFrame movement speed [number, off]"
+            meta["!uncfspeed"] = "Turn off CFrame movement speed"
+            meta["!invis"] = "Toggle FE invisibility with 0.5 ghost preview [on, off]"
+            meta["!invisible"] = "Toggle FE invisibility with 0.5 ghost preview [on, off]"
+            meta["!uninvis"] = "Become visible again at current ghost position"
+            meta["!uninvisible"] = "Become visible again at current ghost position"
+            meta["!vis"] = "Become visible again at current ghost position"
+            meta["!visible"] = "Become visible again at current ghost position"
+        end
+    end
+
+    -- 3A. Register in both ak.builtInFns (works on every executor) & macRunOne0 upvalues
+    if type(ak.builtInFns) == "table" then
+        installCmdEntries(ak.builtInFns, nil)
+    end
+
     if type(ak.macRunOne0) == "function" and debug and debug.getupvalues then
         for _, rawUv in pairs(debug.getupvalues(ak.macRunOne0)) do
             local u16 = unwrapTable(rawUv)
@@ -1897,69 +2472,7 @@ local function patchMovementUIAndCommands()
                 local cmds = type(b1) == "table" and unwrapTable(rawget(b1, 239))
                 local meta = type(b3) == "table" and unwrapTable(rawget(b3, 239))
                 if type(cmds) == "table" and type(meta) == "table" then
-                    local speedCmd = function(arg1)
-                        if type(arg1) == "string" then
-                            local lw = arg1:lower()
-                            if lw == "off" or lw == "reset" or lw == "default" then
-                                setWalkSpeed(nil, false)
-                                return
-                            end
-                        end
-                        local n = tonumber(arg1)
-                        if not n then
-                            ak.lastCmdErr = "Invalid number"
-                            return
-                        end
-                        setWalkSpeed(math.clamp(n, 0, 1000), false)
-                    end
-
-                    local unspeedCmd = function()
-                        setWalkSpeed(nil, false)
-                    end
-
-                    local cfSpeedCmd = function(arg1)
-                        if arg1 == nil or arg1 == "" then
-                            if cfSpeedVal > 0 then
-                                setCfSpeed(0, false)
-                            else
-                                setCfSpeed(35, false)
-                            end
-                            return
-                        end
-                        if type(arg1) == "string" then
-                            local lw = arg1:lower()
-                            if lw == "off" or lw == "reset" or lw == "0" then
-                                setCfSpeed(0, false)
-                                return
-                            end
-                        end
-                        local n = tonumber(arg1)
-                        if not n then
-                            ak.lastCmdErr = "Invalid number"
-                            return
-                        end
-                        setCfSpeed(math.clamp(n, 0, 500), false)
-                    end
-
-                    local unCfSpeedCmd = function()
-                        setCfSpeed(0, false)
-                    end
-
-                    cmds["!speed"] = speedCmd
-                    cmds["!ws"] = speedCmd
-                    cmds["!walkspeed"] = speedCmd
-                    cmds["!unspeed"] = unspeedCmd
-                    cmds["!cfspeed"] = cfSpeedCmd
-                    cmds["!cframespeed"] = cfSpeedCmd
-                    cmds["!uncfspeed"] = unCfSpeedCmd
-
-                    meta["!speed"] = "Set character WalkSpeed [number, off]"
-                    meta["!ws"] = "Set character WalkSpeed [number, off]"
-                    meta["!walkspeed"] = "Set character WalkSpeed [number, off]"
-                    meta["!unspeed"] = "Reset WalkSpeed back to normal"
-                    meta["!cfspeed"] = "Set CFrame movement speed [number, off]"
-                    meta["!cframespeed"] = "Set CFrame movement speed [number, off]"
-                    meta["!uncfspeed"] = "Turn off CFrame movement speed"
+                    installCmdEntries(cmds, meta)
                     break
                 end
             end
@@ -1974,6 +2487,12 @@ local function patchMovementUIAndCommands()
         ak.cmdIcons.cfspeed = "zap"
         ak.cmdIcons.cframespeed = "zap"
         ak.cmdIcons.uncfspeed = "zap"
+        ak.cmdIcons.invis = "eye-off"
+        ak.cmdIcons.invisible = "eye-off"
+        ak.cmdIcons.uninvis = "eye"
+        ak.cmdIcons.uninvisible = "eye"
+        ak.cmdIcons.vis = "eye"
+        ak.cmdIcons.visible = "eye"
     end
 
     -- 3B. Patch CoreGui.AKAdmin2 Movement Tab (WalkSpeed sync + CFrame Speed Slider Card) & Commands Tab
@@ -2176,8 +2695,10 @@ local function patchMovementUIAndCommands()
 
                 local speedCard = addCmdCard("!speed", "Set character WalkSpeed [number, off]", "gauge", 81)
                 local cfSpeedCard = addCmdCard("!cfspeed", "Set CFrame movement speed [number, off]", "zap", 17)
+                local invisCard = addCmdCard("!invis", "Toggle FE invisibility with 0.5 ghost preview [on, off]", "eye-off", 45)
+                local unInvisCard = addCmdCard("!uninvis", "Become visible again at current ghost position", "eye", 95)
 
-                -- Hook Commands search TextBox so searching filters !speed and !cfspeed too
+                -- Hook Commands search TextBox so searching filters custom AKPlus commands too
                 for _, tb in ipairs(gui:GetDescendants()) do
                     if tb:IsA("TextBox") and tb.PlaceholderText:find("Search") and tb.PlaceholderText:find("commands") then
                         trackConn(tb:GetPropertyChangedSignal("Text"):Connect(function()
@@ -2187,6 +2708,12 @@ local function patchMovementUIAndCommands()
                             end
                             if cfSpeedCard and cfSpeedCard.Parent then
                                 cfSpeedCard.Visible = (q == "" or ("!cfspeed cframe speed"):find(q, 1, true) ~= nil)
+                            end
+                            if invisCard and invisCard.Parent then
+                                invisCard.Visible = (q == "" or ("!invis !invisible ghost stealth vanish"):find(q, 1, true) ~= nil)
+                            end
+                            if unInvisCard and unInvisCard.Parent then
+                                unInvisCard.Visible = (q == "" or ("!uninvis !uninvisible !vis !visible invis"):find(q, 1, true) ~= nil)
                             end
                         end))
                         break
@@ -2210,18 +2737,63 @@ trackConn(Workspace.ChildAdded:Connect(function(child)
     end
 end))
 
--- Hook AKUI.reanimRun and apply Movement UI + Commands patches (supports 1-script Shim Mode OR post-load Hotfix Mode)
+-- Hook AKUI functions and apply Movement UI + Commands + Persistence patches
 local function hookAndApplyAll()
     local ak = genv.AKUI
-    if type(ak) == "table" and type(ak.reanimRun) == "function" then
-        if not genv._AKOrigReanimRun then
-            genv._AKOrigReanimRun = ak.reanimRun
+    if type(ak) == "table" then
+        if type(genv._AKPatchTranslator) == "function" then
+            pcall(genv._AKPatchTranslator, ak)
         end
-        local origRun = genv._AKOrigReanimRun
-        ak.reanimRun = function(...)
-            local r = origRun(...)
-            task.defer(patchAKReanimSession)
-            return r
+
+        if type(ak.reanimRun) == "function" then
+            if not genv._AKOrigReanimRun then
+                genv._AKOrigReanimRun = ak.reanimRun
+            end
+            local origRun = genv._AKOrigReanimRun
+            ak.reanimRun = function(...)
+                local r = origRun(...)
+                task.defer(patchAKReanimSession)
+                return r
+            end
+        end
+
+        -- Scoped CoreGui scan accelerator for !antivcban (vcRun / vcBuild)
+        for _, vcKey in ipairs({ "vcRun", "vcBuild" }) do
+            if type(ak[vcKey]) == "function" and ak[vcKey] ~= genv["_AKWrapped_" .. vcKey] then
+                if not genv["_AKOrig_" .. vcKey] then
+                    genv["_AKOrig_" .. vcKey] = ak[vcKey]
+                end
+                local origVcFn = genv["_AKOrig_" .. vcKey]
+                local wrappedVcFn = function(...)
+                    local th = coroutine and coroutine.running and coroutine.running() or nil
+                    local vct = genv._AKVcThreads
+                    if th and type(vct) == "table" then
+                        vct[th] = true
+                    end
+                    local okCall, r1, r2, r3 = pcall(origVcFn, ...)
+                    if th and type(vct) == "table" then
+                        vct[th] = nil
+                    end
+                    if not okCall then
+                        error(r1, 2)
+                    end
+                    return r1, r2, r3
+                end
+                genv["_AKWrapped_" .. vcKey] = wrappedVcFn
+                ak[vcKey] = wrappedVcFn
+            end
+        end
+
+        -- Hook AKUI.reexecGo so clicking Re-execute reloads AKPlus instead of vanilla AK Admin
+        if type(ak.reexecGo) == "function" and ak.reexecGo ~= genv._AKWrappedReexecGo then
+            if not genv._AKOrigReexecGo then
+                genv._AKOrigReexecGo = ak.reexecGo
+            end
+            local wrappedReexec = function()
+                runAKPlusReload()
+            end
+            genv._AKWrappedReexecGo = wrappedReexec
+            ak.reexecGo = wrappedReexec
         end
     end
     patchAKReanimSession()
@@ -2249,6 +2821,7 @@ end
 
 genv._AKReanimBoosterUnload = function()
     cfSpeedVal = 0
+    disableInvisible(true)
     for i = 1, #activeConns do
         pcall(function() activeConns[i]:Disconnect() end)
     end
@@ -2257,8 +2830,20 @@ genv._AKReanimBoosterUnload = function()
         pcall(function() injectedInstances[i]:Destroy() end)
     end
     table.clear(injectedInstances)
-    if type(genv.AKUI) == "table" and genv._AKOrigReanimRun then
-        genv.AKUI.reanimRun = genv._AKOrigReanimRun
+    local ak = genv.AKUI
+    if type(ak) == "table" then
+        if genv._AKOrigReanimRun then
+            ak.reanimRun = genv._AKOrigReanimRun
+        end
+        if genv._AKOrig_vcRun then
+            ak.vcRun = genv._AKOrig_vcRun
+        end
+        if genv._AKOrig_vcBuild then
+            ak.vcBuild = genv._AKOrig_vcBuild
+        end
+        if genv._AKOrigReexecGo then
+            ak.reexecGo = genv._AKOrigReexecGo
+        end
     end
 end
 
