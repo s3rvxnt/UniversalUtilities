@@ -435,21 +435,20 @@ do
 
     local function updateBudget(sleepGap, totalDt)
         if not isFocused then
-            dynBudget = 0.016
+            dynBudget = 0.018
             return
         end
         if sleepGap > 0.0002 and sleepGap < 0.200 then
             smoothedEngine = smoothedEngine * 0.78 + sleepGap * 0.22
         end
-        if totalDt > 0.085 or sleepGap > 0.065 then
-            dynBudget = 0.004
+        if totalDt > 0.095 then
+            dynBudget = math.max(dynBudget * 0.65, 0.006)
+        elseif totalDt <= 0.0188 then
+            dynBudget = math.min(dynBudget + 0.0016, 0.0145)
+        elseif totalDt <= 0.025 then
+            dynBudget = math.clamp(dynBudget + (0.0215 - totalDt) * 0.25, 0.0085, 0.0140)
         else
-            local headroom = 0.0172 - smoothedEngine
-            if headroom >= 0.005 then
-                dynBudget = math.clamp(headroom, 0.005, 0.0145)
-            else
-                dynBudget = math.clamp(smoothedEngine * 0.36, 0.004, 0.0075)
-            end
+            dynBudget = math.clamp(dynBudget * 0.85, 0.006, 0.0125)
         end
     end
 
@@ -1487,18 +1486,19 @@ do
         end)
     end
 
-    local function _AKY()
-        yCount = yCount + 1
-        strideLeft = strideLeft - 1
+    local function _AKY(step)
+        local n = step or 1
+        yCount = yCount + n
+        strideLeft = strideLeft - n
         if strideLeft > 0 then return end
 
         local now = os.clock()
         local sliceDt = now - lastStrideClock
         lastStrideClock = now
         if sliceDt > 0.0012 then
-            dynStride = math.clamp(math.floor(dynStride * (0.0006 / sliceDt)), 8, 512)
+            dynStride = math.clamp(math.floor(dynStride * (0.0006 / sliceDt)), 64, 1024)
         elseif sliceDt < 0.0003 and sliceDt >= 0 then
-            dynStride = math.min(dynStride * 2, 512)
+            dynStride = math.min(dynStride * 2, 1024)
         end
         strideLeft = dynStride
 
@@ -2432,24 +2432,24 @@ end)
                         :gsub("^return setmetatable", "_AKS();local _AKR=setmetatable", 1)
                         :gsub(":([%w_]+)%(%)%(%.%.%.%);?%s*$", ":%1()(...);_AKD();return _AKR", 1)
                 end
-                src = src
-                    :gsub("for (%w+)=1,#(%w+),5 do ", "for %1=1,#%2,5 do if %1%%200==1 then _AKY()end;", 1)
-                    :gsub("while (%w+)%+39<=(%w+) do local ", "while %1+39<=%2 do if %1%%4000==1 then _AKY()end;local ", 1)
-                    :gsub("while (%w+) do if %1<=([%w_]+)", "while %1 do _AKY();if %1<=%2")
-                    :gsub("while true do if (%w+<=%d+) then ", "while true do _AKY();if %1 then ")
-                    :gsub("while (%w+)%[(%d+)%]do (%w+)%[(%d+)%]%((%w+),(%w+),%.%.%.%)end;", "while %1[%2]do _AKY();%3[%4](%5,%6,...)end;")
-                    :gsub("else U%[90%]=U%[45%]U%[0%]=14386203;end;", "else _AKY();U[90]=U[45]U[0]=14386203;end;", 1)
+                src = "local _AKY,_AKP,_akc=(getgenv and getgenv()._AKY)or _AKY,(getgenv and getgenv()._AKP)or _AKP,0;" .. src
+                    :gsub("for (%w+)=1,#(%w+),5 do ", "for %1=1,#%2,5 do if %1%%200==1 then _AKY(256)end;", 1)
+                    :gsub("while (%w+)%+39<=(%w+) do local ", "while %1+39<=%2 do if %1%%4000==1 then _AKY(512)end;local ", 1)
+                    :gsub("while (%w+) do if %1<=([%w_]+)", "while %1 do _akc+=1;if _akc>=64 then _akc=0;_AKY(64)end;if %1<=%2")
+                    :gsub("while true do if (%w+<=%d+) then ", "while true do _akc+=1;if _akc>=64 then _akc=0;_AKY(64)end;if %1 then ")
+                    :gsub("while (%w+)%[(%d+)%]do (%w+)%[(%d+)%]%((%w+),(%w+),%.%.%.%)end;", "while %1[%2]do _akc+=1;if _akc>=64 then _akc=0;_AKY(64)end;%3[%4](%5,%6,...)end;")
+                    :gsub("else U%[90%]=U%[45%]U%[0%]=14386203;end;", "else _akc+=1;if _akc>=64 then _akc=0;_AKY(64)end;U[90]=U[45]U[0]=14386203;end;", 1)
                     :gsub(
                         "for (%w+)=1,L do local E=U%[209%]%(m,K%)",
-                        "for %1=1,L do _AKY();local E=U[209](m,K)"
+                        "for %1=1,L do _akc+=1;if _akc>=64 then _akc=0;_AKY(64)end;local E=U[209](m,K)"
                     )
                     :gsub(
                         "if (%w+==%d+) then while true do local ",
-                        "if %1 then while true do _AKY();local "
+                        "if %1 then while true do _akc+=1;if _akc>=64 then _akc=0;_AKY(64)end;local "
                     )
                     :gsub(
                         "while true do F%[7295896%]=W;",
-                        "while true do _AKY();F[7295896]=W;"
+                        "while true do _akc+=1;if _akc>=64 then _akc=0;_AKY(64)end;F[7295896]=W;"
                     )
                     :gsub(
                         "elseif h==58 then K%[W%[U%]%]=K%[z%[U%]%]%+K%[o%[U%]%]U%+=1;",
@@ -2611,6 +2611,8 @@ end)
     local alreadyLoaded = (type(g.AKUI) == "table" and existingGui and existingGui:FindFirstChild("!jump", true) ~= nil)
     if alreadyLoaded then
         s3Loaded = true
+        table.clear(subCache)
+        table.clear(subCacheOrder)
         pcall(patchAkTranslator, g.AKUI)
         for _, v in pairs(g.AKUI) do
             if type(v) == "function" then
