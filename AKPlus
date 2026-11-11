@@ -1,8 +1,8 @@
 -- ============================================================================
--- UNIVERSAL EXECUTOR COMPATIBILITY & SLOW-CPU ANTI-FREEZE SHIM (v8)
+-- AKPlus: UNIVERSAL EXECUTOR SHIM & DYNAMIC ANTI-FREEZE GOVERNOR (v8.1)
 -- Fixes mobile/sandboxed executors (Delta, Codex, Vega X, Hydrogen, Solara,
--- Xeno, Madium, Helios, Potassium, etc.) + built-in diagnostic pill + live
--- AKAuthGui 0-100% progress bar hijack + post-load sub-command VM anti-freeze.
+-- Xeno, Madium, Helios, Potassium, etc.) + OmniTaskManager-aware dynamic
+-- frame-budget & auto-stride governor + AKAuthGui 0-100% progress & telemetry.
 -- ============================================================================
 do
     local callerEnv = getfenv and getfenv(1) or nil
@@ -29,6 +29,76 @@ do
     local Players = game:GetService("Players")
     local RunService = game:GetService("RunService")
     local TweenService = game:GetService("TweenService")
+    local UserInputService = game:GetService("UserInputService")
+
+    -- Window focus tracking + OmniTaskManager unthrottled C-yield bypass
+    local isFocused = true
+    local rawTaskWait = g._KernelOrigTaskWait or (task and task.wait)
+    local t0 = os.clock()
+    local smoothedEngine = 0.0035
+    local dynBudget = 0.012
+    local dynStride = 128
+    local strideLeft = 128
+    local lastStrideClock = t0
+
+    pcall(function()
+        if type(g._AKFocusConns) == "table" then
+            for _, cn in ipairs(g._AKFocusConns) do
+                pcall(function() cn:Disconnect() end)
+            end
+        end
+        local c1 = UserInputService.WindowFocused:Connect(function()
+            isFocused = true
+            if dynBudget > 0.0145 then
+                dynBudget = 0.008
+            end
+        end)
+        local c2 = UserInputService.WindowFocusReleased:Connect(function()
+            isFocused = false
+        end)
+        g._AKFocusConns = { c1, c2 }
+    end)
+
+    local function fastWait()
+        if coroutine and coroutine.running then
+            local th = coroutine.running()
+            if th then
+                local ig = g._OmniIgnoredThreads
+                if type(ig) ~= "table" then
+                    ig = setmetatable({}, { __mode = "k" })
+                    g._OmniIgnoredThreads = ig
+                end
+                if not ig[th] then
+                    ig[th] = true
+                end
+            end
+        end
+        local w = g._KernelOrigTaskWait or rawTaskWait or (task and task.wait)
+        if w then
+            return pcall(w)
+        end
+        return false
+    end
+
+    local function updateBudget(sleepGap, totalDt)
+        if not isFocused then
+            dynBudget = 0.024
+            return
+        end
+        if sleepGap > 0.0002 and sleepGap < 0.200 then
+            smoothedEngine = smoothedEngine * 0.78 + sleepGap * 0.22
+        end
+        if totalDt > 0.085 or sleepGap > 0.065 then
+            dynBudget = 0.004
+        else
+            local headroom = 0.0172 - smoothedEngine
+            if headroom >= 0.005 then
+                dynBudget = math.clamp(headroom, 0.005, 0.0145)
+            else
+                dynBudget = math.clamp(smoothedEngine * 0.36, 0.004, 0.0075)
+            end
+        end
+    end
 
     local function findGui(name)
         local found = CoreGui:FindFirstChild(name)
@@ -45,7 +115,6 @@ do
 
     -- Built-in live diagnostic pill + AKAuthGui live progress hijacker
     local statusGui, statusFrame, pillStroke, statusLbl, subLbl, hbConn
-    local t0 = os.clock()
     local lastY = t0
     local maxDt = 0
     local curFps = 60
@@ -98,7 +167,7 @@ do
                 raw = 97
             end
         elseif authLatched then
-            raw = math.clamp(4 + (yieldTotal - latchYield) * 0.6, 4, 14)
+            raw = math.clamp(4 + (yieldTotal - latchYield) * 1.2, 4, 14)
         end
         if raw > maxRawPct then
             maxRawPct = raw
@@ -220,19 +289,21 @@ do
         end
 
         local now = os.clock()
+        local shortAk = (#lastAkKey > 9) and lastAkKey:sub(1, 9) or lastAkKey
+        local shortNode = (#lastUiNode > 12) and lastUiNode:sub(1, 12) or lastUiNode
         authDbgLbl.TextTransparency = lbl.TextTransparency
         authDbgLbl.TextColor3 = (maxDt < 0.250) and Color3.fromRGB(130, 235, 170)
             or ((maxDt < 1.0) and Color3.fromRGB(255, 205, 90) or Color3.fromRGB(255, 105, 105))
         authDbgLbl.Text = string.format(
-            "AK Fix v8 [%s] | %.1fs | %d FPS | Lag:%.0fms(x%d) | Yld:%d | VM:%s",
-            execName, now - t0, curFps, maxDt * 1000, spikeCount, yieldTotal, fmtCount(yCount)
+            "AKPlus [%s] | %.1fs | %dFPS | Bdg:%.1fms(S:%d) | Lag:%.0fms(x%d)",
+            execName, now - t0, curFps, dynBudget * 1000, dynStride, maxDt * 1000, spikeCount
         )
 
         authDbgLbl2.TextTransparency = lbl.TextTransparency
         authDbgLbl2.TextColor3 = Color3.fromRGB(150, 205, 255)
         authDbgLbl2.Text = string.format(
-            "Chk:%s | AKUI:%d(%s) | Conns:%d | UI:%d(%s)",
-            lastCheckpoint, akKeyCount, lastAkKey, akConnCount, uiCount, lastUiNode
+            "Yld:%d | VM:%s | %s | AK:%d(%s) | C:%d | UI:%d(%s)",
+            yieldTotal, fmtCount(yCount), lastCheckpoint, akKeyCount, shortAk, akConnCount, uiCount, shortNode
         )
 
         if not authLatched then
@@ -310,7 +381,7 @@ do
             if targetPct >= 100 then
                 visPct = 100
             else
-                visPct = visPct + (targetPct - visPct) * math.clamp((dt or 0.016) * 20, 0.12, 1)
+                visPct = visPct + (targetPct - visPct) * math.clamp((dt or 0.016) * 24, 0.16, 1)
                 if visPct > targetPct then visPct = targetPct end
             end
 
@@ -344,7 +415,7 @@ do
 
     local function updatePill(dt)
         local now = os.clock()
-        if not hasError and (now - lastUiCheck > 0.05) then
+        if not hasError and (now - lastUiCheck > 0.035) then
             lastUiCheck = now
             pcall(function()
                 if type(g.AKUI) == "table" then
@@ -408,10 +479,10 @@ do
         local pctStr = (not hasError and (uiCount > 0 or authLatched))
             and string.format(" (%d%% | UI:%d | AKUI:%d)", math.floor(math.max(visPct, computeRawPct()) + 0.5), uiCount, akKeyCount)
             or string.format(" (Chk:%s)", lastCheckpoint)
-        statusLbl.Text = string.format("AK Fix v8 [%s] | %s%s", execName, curStage, pctStr)
+        statusLbl.Text = string.format("AKPlus [%s] | %s%s", execName, curStage, pctStr)
         subLbl.Text = string.format(
-            "%.1fs | %d FPS | Lag:%.0fms(x%d) | Yld:%d | VM:%s | Conns:%d",
-            now - t0, curFps, maxDt * 1000, spikeCount, yieldTotal, fmtCount(yCount), akConnCount
+            "%.1fs | %dFPS | Bdg:%.1fms | Lag:%.0fms(x%d) | Yld:%d | VM:%s",
+            now - t0, curFps, dynBudget * 1000, maxDt * 1000, spikeCount, yieldTotal, fmtCount(yCount)
         )
         if not hasError then
             subLbl.TextColor3 = (maxDt < 0.250) and Color3.fromRGB(130, 235, 170)
@@ -478,7 +549,9 @@ do
                 statusGui.Parent = parent
 
                 hbConn = RunService.Heartbeat:Connect(function(dt)
-                    lastY = os.clock()
+                    local now = os.clock()
+                    lastY = now
+                    lastStrideClock = now
                     if dt > maxDt then maxDt = dt end
                     if dt > 0.100 then spikeCount = spikeCount + 1 end
                     curFps = math.clamp(math.floor(1 / math.max(dt, 0.001) + 0.5), 1, 240)
@@ -509,7 +582,7 @@ do
         hasError = true
         s3Done = true
         curStage = "ERR: " .. clean
-        pcall(warn, "[AK Fix v8 Error]", err)
+        pcall(warn, "[AKPlus Error]", err)
         pcall(function()
             if hbConn then hbConn:Disconnect(); hbConn = nil end
             if statusFrame then
@@ -533,7 +606,7 @@ do
 
     lastCheckpoint = "CleanCache"
     setStatus("[1/6] Cleaning cache...")
-    if task and task.wait then pcall(task.wait) end
+    fastWait()
 
     pcall(function()
         local existing = findGui("AKAdmin2")
@@ -597,11 +670,45 @@ do
     }
     g._AKP = _AKP
 
+    local function maybeYield(force)
+        if coroutine and coroutine.isyieldable and not coroutine.isyieldable() then
+            return
+        end
+        local now = os.clock()
+        local ref = s3Done and burstStart or lastY
+        if ref <= 0 then ref = lastCheck end
+        if force or (ref <= 0) or (now - ref > dynBudget) then
+            local hadSlice = (ref > 0)
+            local sliceStart = hadSlice and ref or now
+            if fastWait() then
+                local after = os.clock()
+                if hadSlice and not force then
+                    updateBudget(after - now, after - sliceStart)
+                end
+                lastY = after
+                lastCheck = after
+                burstStart = after
+                lastStrideClock = after
+            end
+        end
+    end
+
     local function _AKS()
         s3Done = false
-        s3Start = os.clock()
+        local now = os.clock()
+        s3Start = now
         s3Thread = (coroutine and coroutine.running and coroutine.running()) or nil
-        yCount = 63
+        if s3Thread then
+            local ig = g._OmniIgnoredThreads
+            if type(ig) ~= "table" then
+                ig = setmetatable({}, { __mode = "k" })
+                g._OmniIgnoredThreads = ig
+            end
+            ig[s3Thread] = true
+        end
+        dynStride = 128
+        strideLeft = 1
+        lastStrideClock = now
         lastY = 0
     end
 
@@ -628,8 +735,19 @@ do
 
     local function _AKY()
         yCount = yCount + 1
-        if yCount % 64 ~= 0 then return end
+        strideLeft = strideLeft - 1
+        if strideLeft > 0 then return end
+
         local now = os.clock()
+        local sliceDt = now - lastStrideClock
+        lastStrideClock = now
+        if sliceDt > 0.0012 then
+            dynStride = math.clamp(math.floor(dynStride * (0.0006 / sliceDt)), 8, 512)
+        elseif sliceDt < 0.0003 and sliceDt >= 0 then
+            dynStride = math.min(dynStride * 2, 512)
+        end
+        strideLeft = dynStride
+
         if not s3Done then
             if not s3Thread and coroutine and coroutine.running then
                 s3Thread = coroutine.running()
@@ -637,27 +755,31 @@ do
             if s3Thread and coroutine and coroutine.running and coroutine.running() ~= s3Thread then
                 return
             end
-            if now - lastY > 0.012 then
+            if now - lastY > dynBudget then
                 if coroutine and coroutine.isyieldable and not coroutine.isyieldable() then
-                    yCount = 48
+                    strideLeft = 16
                     return
                 end
-                if task and task.wait then
-                    yieldTotal = yieldTotal + 1
-                    if yieldTotal % 8 == 0 then
-                        local hasUi = findGui("AKAdmin2") ~= nil
-                        setStatus(hasUi and "[6/6] Building UI..." or "[5/6] Running VM...")
+                yieldTotal = yieldTotal + 1
+                if yieldTotal % 8 == 0 then
+                    local hasUi = findGui("AKAdmin2") ~= nil
+                    setStatus(hasUi and "[6/6] Building UI..." or "[5/6] Running VM...")
+                end
+                local hadSlice = (lastY > 0)
+                local sliceStart = hadSlice and lastY or now
+                if fastWait() then
+                    local after = os.clock()
+                    if hadSlice then
+                        updateBudget(after - now, after - sliceStart)
                     end
-                    local ok = pcall(task.wait)
-                    if ok then
-                        lastY = os.clock()
-                        lastCheck = lastY
-                        burstStart = lastY
-                        if g.AKUI and g.AKUI.initDone then
-                            _AKD()
-                        elseif (lastY - s3Start > 60) and not findGui("AKAuthGui") then
-                            _AKD()
-                        end
+                    lastY = after
+                    lastCheck = after
+                    burstStart = after
+                    lastStrideClock = after
+                    if g.AKUI and g.AKUI.initDone then
+                        _AKD()
+                    elseif (after - s3Start > 60) and not findGui("AKAuthGui") then
+                        _AKD()
                     end
                 end
             end
@@ -666,17 +788,22 @@ do
                 burstStart = now
             end
             lastCheck = now
-            if now - burstStart > 0.012 then
+            if now - burstStart > dynBudget then
                 if coroutine and coroutine.isyieldable and not coroutine.isyieldable() then
+                    strideLeft = 16
                     return
                 end
-                if task and task.wait then
-                    local ok = pcall(task.wait)
-                    if ok then
-                        local after = os.clock()
-                        lastCheck = after
-                        burstStart = after
+                local hadSlice = (burstStart > 0)
+                local sliceStart = hadSlice and burstStart or now
+                if fastWait() then
+                    local after = os.clock()
+                    if hadSlice then
+                        updateBudget(after - now, after - sliceStart)
                     end
+                    lastY = after
+                    lastCheck = after
+                    burstStart = after
+                    lastStrideClock = after
                 end
             end
         end
@@ -866,13 +993,14 @@ do
         local isStage3 = false
         local isSubVM = false
         local bVar, bVal
-        local canYield = task and task.wait and (not coroutine or not coroutine.isyieldable or coroutine.isyieldable())
+        local canYield = (rawTaskWait ~= nil or (task and task.wait ~= nil))
+            and (not coroutine or not coroutine.isyieldable or coroutine.isyieldable())
         if type(src) == "string" then
             if src:find("DecompressBuffer", 1, true) then
                 isStage2 = true
                 lastCheckpoint = "S2-Patch"
                 setStatus("[3/6] Decompressing Stage 2...")
-                if canYield then pcall(task.wait) end
+                if canYield then maybeYield(true) end
                 s3Thread = nil
                 src = src
                     :gsub("=%(1/300%)", "=(1/100)")
@@ -889,11 +1017,10 @@ do
                     s3Thread = nil
                     lastCheckpoint = "S3-ExtractBlob"
                     setStatus("[4/6] Compiling Stage 3...")
+                    if canYield then maybeYield(true) end
                 else
                     isSubVM = true
-                end
-                if canYield then
-                    pcall(task.wait)
+                    if canYield then maybeYield(false) end
                 end
                 local b1, b2, bKey = src:find(",([%w_]+)=%[==%[")
                 local e1, e2 = src:find("]==],", b2 or 1, true)
@@ -910,7 +1037,7 @@ do
                     pcall(rawset, origEnv, bVar, bVal)
                     src = src:sub(1, b1 - 1) .. "," .. bKey .. "=" .. bVar .. "," .. src:sub(e2 + 1)
                     if canYield then
-                        pcall(task.wait)
+                        maybeYield(false)
                     end
                 end
                 if isStage3 then
@@ -944,7 +1071,7 @@ do
                         1
                     )
                 if canYield then
-                    pcall(task.wait)
+                    maybeYield(isStage3)
                 end
             end
         end
@@ -968,14 +1095,14 @@ do
             lastCheckpoint = "S3-VMInit"
             setStatus("[5/6] Running VM...")
             if canYield then
-                pcall(task.wait)
+                maybeYield(true)
             end
             if task and task.delay then
                 task.delay(60, function()
                     if not findGui("AKAuthGui") then _AKD() end
                 end)
             end
-            yCount = 63
+            strideLeft = 1
             lastY = 0
         end
 
@@ -1002,7 +1129,7 @@ do
                 end
             end
             if isSubVM and canYield then
-                pcall(task.wait)
+                maybeYield(false)
             end
         end
         return fn, err
@@ -1064,8 +1191,19 @@ do
     else
         lastCheckpoint = "HttpGetS1"
         setStatus("[2/6] Fetching AKADMIN.lua...")
-        if task and task.wait then pcall(task.wait) end
+        fastWait()
         task.spawn(function()
+            if coroutine and coroutine.running then
+                local th = coroutine.running()
+                if th then
+                    local ig = g._OmniIgnoredThreads
+                    if type(ig) ~= "table" then
+                        ig = setmetatable({}, { __mode = "k" })
+                        g._OmniIgnoredThreads = ig
+                    end
+                    ig[th] = true
+                end
+            end
             local okRun, runErr = pcall(function()
                 local s1Src = game:HttpGet("https://absent.wtf/AKADMIN.lua")
                 lastCheckpoint = "CompileS1"
