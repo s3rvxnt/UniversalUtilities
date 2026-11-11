@@ -1,16 +1,22 @@
 -- ============================================================================
--- AKPlus: UNIVERSAL EXECUTOR SHIM & DYNAMIC ANTI-FREEZE GOVERNOR (v8.2)
+-- AKPlus: UNIVERSAL EXECUTOR SHIM & DYNAMIC ANTI-FREEZE GOVERNOR (v8.2.2)
+-- AKPlusBuild:822
 -- Fixes mobile/sandboxed executors (Delta, Codex, Vega X, Hydrogen, Solara,
 -- Xeno, Madium, Helios, Potassium, etc.) + OmniTaskManager-aware dynamic
 -- frame-budget & auto-stride governor + sub-command VM cache + English trHook
--- fast-bypass + scoped !antivcban + FE !invis + !reexecute/!rj persistence.
+-- fast-bypass + scoped !antivcban + FE !invis + multi-rejoin persistence.
 -- ============================================================================
 do
+    local AKPLUS_BUILD = 822
     local callerEnv = getfenv and getfenv(1) or nil
     local origEnv = getfenv and getfenv(0) or _G
     local g = (getgenv and getgenv()) or _G
+    g._AKPlusBuild = AKPLUS_BUILD
     g._AKPlusServerBoot = tostring(game.PlaceId) .. ":" .. tostring(game.JobId)
-    g._AKPlusTeleportQueued = false
+    if g._AKPlusDataModel ~= game then
+        g._AKPlusDataModel = game
+        g._AKPlusTeleportArmed = false
+    end
     local c = newcclosure or function(...) return ... end
     local oldLs = g._AKOrigLs or g.loadstring or loadstring
     local origIsc = g._AKOrigIsc or g.iscclosure or iscclosure
@@ -553,7 +559,7 @@ do
             if not statusGui then
                 local parent = (gethui and gethui())
                     or CoreGui
-                    or Players.LocalPlayer:FindFirstChild("PlayerGui")
+                    or (Players.LocalPlayer and Players.LocalPlayer:FindFirstChild("PlayerGui"))
                 local old = parent and parent:FindFirstChild("_AKFixStatus")
                 if old then old:Destroy() end
 
@@ -781,6 +787,9 @@ do
                 statusFrame.Visible = true
             end
             setStatus("[6/6] Loaded!")
+            if type(g._AKOnStage3Done) == "function" then
+                task.defer(g._AKOnStage3Done)
+            end
             if statusGui and task and task.delay then
                 task.delay(4, function()
                     if statusGui then statusGui:Destroy(); statusGui = nil end
@@ -1028,28 +1037,92 @@ do
         g.debug = targetDbg
     end
 
-    -- Teleport persistence helper + scoped CoreGui proxy for fast vcRun/vcBuild scans
+    -- Multi-hop teleport persistence helper + scoped CoreGui proxy for fast vcRun/vcBuild scans
     local AKPLUS_TELEPORT_CODE = [[
+local _g = (getgenv and getgenv()) or _G
+if _g._AKPlusDataModel == game then return end
+_g._AKPlusDataModel = game
+_g._AKPlusTeleportArmed = false
 task.spawn(function()
     if not game:IsLoaded() then game.Loaded:Wait() end
+    local Players = game:GetService("Players")
+    local tWait = os.clock()
+    while not Players.LocalPlayer and (os.clock() - tWait < 15) do
+        task.wait(0.05)
+    end
     local g = (getgenv and getgenv()) or _G
-    local sig = tostring(game.PlaceId) .. ":" .. tostring(game.JobId)
-    if g._AKPlusServerBoot == sig then return end
-    g._AKPlusServerBoot = sig
+    g._AKPlusServerBoot = tostring(game.PlaceId) .. ":" .. tostring(game.JobId)
+
+    local function parseBuild(s)
+        if type(s) ~= "string" then return 0 end
+        return tonumber(s:match("AKPlusBuild:(%d+)")) or 1
+    end
+
+    local isf = isfile or g.isfile
+    local rdf = readfile or g.readfile
+    local wrf = writefile or g.writefile
+    if type(isf) == "function" then
+        local okOmni, hasOmni = pcall(isf, "Omni_Ledger.json")
+        if okOmni and hasOmni then
+            local bWait = os.clock()
+            while g._OmniCurrentDataModel ~= game and (os.clock() - bWait < 6) do
+                task.wait(0.05)
+            end
+            local kWait = os.clock()
+            while g._OmniBootloaderRunning and not g._KernelOrigTaskWait and (os.clock() - kWait < 2) do
+                task.wait(0.05)
+            end
+        else
+            task.wait(0.2)
+        end
+    else
+        task.wait(0.2)
+    end
+
+    local cachedSrc = nil
+    if type(isf) == "function" and type(rdf) == "function" then
+        local okC, cSrc = pcall(function()
+            if isf("_akplus_cache.lua") then return rdf("_akplus_cache.lua") end
+            return nil
+        end)
+        if okC and type(cSrc) == "string" and #cSrc > 1000 and cSrc:find("AKPlus", 1, true) then
+            cachedSrc = cSrc
+        end
+    end
+
     local urls = {
         g._AKPlusUrl,
         "https://raw.githubusercontent.com/s3rvxnt/UniversalUtilities/main/AKPlus",
         "https://raw.githubusercontent.com/s3rvxnt/UniversalUtilities/main/TempAkAdminFix",
     }
-    local ls = g._AKOrigLs or g.loadstring or loadstring
+    local chosenSrc = nil
+    local cachedBuild = parseBuild(cachedSrc)
     for i = 1, 3 do
         local u = urls[i]
         if type(u) == "string" and #u > 10 then
             local ok, src = pcall(game.HttpGet, game, u)
             if ok and type(src) == "string" and #src > 1000 and src:find("AKPlus", 1, true) then
-                local fn = ls and ls(src)
-                if fn then pcall(fn); return end
+                if parseBuild(src) >= cachedBuild then
+                    chosenSrc = src
+                    if type(wrf) == "function" then
+                        pcall(wrf, "_akplus_cache.lua", src)
+                    end
+                else
+                    chosenSrc = cachedSrc
+                end
+                break
             end
+        end
+    end
+    if not chosenSrc then
+        chosenSrc = cachedSrc
+    end
+
+    local ls = g._AKOrigLs or g.loadstring or loadstring
+    if chosenSrc and ls then
+        local fn = ls(chosenSrc)
+        if fn then
+            pcall(fn)
         end
     end
 end)
@@ -1065,11 +1138,14 @@ end)
         g._AKOrigQot = rawQot
     end
 
-    local function queueAKPlusOnce()
-        if g._AKPlusTeleportQueued then return true end
+    local function queueAKPlusOnce(force)
+        if g._AKPlusTeleportArmed and g._AKPlusDataModel == game and not force then
+            return true
+        end
         local qfn = g._AKOrigQot or rawQot
         if type(qfn) == "function" then
-            g._AKPlusTeleportQueued = true
+            g._AKPlusDataModel = game
+            g._AKPlusTeleportArmed = true
             pcall(qfn, AKPLUS_TELEPORT_CODE)
             return true
         end
@@ -1079,11 +1155,58 @@ end)
 
     local wrappedQot = rawQot and function(code, ...)
         if type(code) == "string" and code:find("AKADMIN", 1, true) then
-            queueAKPlusOnce()
+            queueAKPlusOnce(false)
             return
         end
-        return rawQot(code, ...)
+        return (g._AKOrigQot or rawQot)(code, ...)
     end or nil
+
+    if wrappedQot then
+        pcall(function()
+            g.queue_on_teleport = wrappedQot
+            g.queueonteleport = wrappedQot
+        end)
+    end
+
+    for _, clrName in ipairs({ "clear_teleport_queue", "clearqueueonteleport", "clearteleportqueue" }) do
+        local origClr = g["_AKOrig_" .. clrName] or g[clrName]
+        if type(origClr) == "function" then
+            g["_AKOrig_" .. clrName] = origClr
+            pcall(function()
+                g[clrName] = function(...)
+                    local r = origClr(...)
+                    g._AKPlusTeleportArmed = false
+                    queueAKPlusOnce(true)
+                    return r
+                end
+            end)
+        end
+    end
+
+    -- Proactively arm next-teleport persistence after post-attach queue drain settles,
+    -- and sync local fallback cache whenever remote AKPlus matches/exceeds build.
+    task.spawn(function()
+        if not game:IsLoaded() then game.Loaded:Wait() end
+        fastWait()
+        if task and task.delay then
+            task.delay(0.75, function()
+                queueAKPlusOnce(false)
+            end)
+        else
+            queueAKPlusOnce(false)
+        end
+        local wrf = writefile or g.writefile
+        if type(wrf) == "function" then
+            local u = g._AKPlusUrl or "https://raw.githubusercontent.com/s3rvxnt/UniversalUtilities/main/AKPlus"
+            local okR, rSrc = pcall(game.HttpGet, game, u)
+            if okR and type(rSrc) == "string" and #rSrc > 1000 and rSrc:find("AKPlus", 1, true) then
+                local rBuild = tonumber(rSrc:match("AKPlusBuild:(%d+)")) or 1
+                if rBuild >= AKPLUS_BUILD then
+                    pcall(wrf, "_akplus_cache.lua", rSrc)
+                end
+            end
+        end
+    end)
 
     local vcThreads = g._AKVcThreads
     if type(vcThreads) ~= "table" then
@@ -2169,19 +2292,33 @@ local function enableInvisible()
     end
 end
 
-if LocalPlayer then
-    trackConn(LocalPlayer.CharacterAdded:Connect(function()
+local lpSignalsBound = false
+local function bindLocalPlayerSignals(lp)
+    if not lp or lpSignalsBound then return end
+    lpSignalsBound = true
+    LocalPlayer = lp
+    trackConn(lp.CharacterAdded:Connect(function()
         if invisActive then
             disableInvisible(false)
         end
     end))
-    if LocalPlayer.OnTeleport then
-        trackConn(LocalPlayer.OnTeleport:Connect(function()
+    if lp.OnTeleport then
+        trackConn(lp.OnTeleport:Connect(function()
             if type(genv._AKQueueTeleport) == "function" then
-                pcall(genv._AKQueueTeleport)
+                pcall(genv._AKQueueTeleport, false)
             end
         end))
     end
+end
+
+if LocalPlayer then
+    bindLocalPlayerSignals(LocalPlayer)
+else
+    trackConn(Players:GetPropertyChangedSignal("LocalPlayer"):Connect(function()
+        if Players.LocalPlayer then
+            bindLocalPlayerSignals(Players.LocalPlayer)
+        end
+    end))
 end
 
 local function runAKPlusReload()
@@ -2206,23 +2343,59 @@ local function runAKPlusReload()
             _G.AKUI = nil
         end
         genv._AKPlusServerBoot = nil
+
+        local function parseBuild(s)
+            if type(s) ~= "string" then return 0 end
+            return tonumber(s:match("AKPlusBuild:(%d+)")) or 1
+        end
+
+        local cachedSrc = nil
+        local isf = isfile or genv.isfile
+        local rdf = readfile or genv.readfile
+        local wrf = writefile or genv.writefile
+        if type(isf) == "function" and type(rdf) == "function" then
+            local okC, cSrc = pcall(function()
+                if isf("_akplus_cache.lua") then return rdf("_akplus_cache.lua") end
+                return nil
+            end)
+            if okC and type(cSrc) == "string" and #cSrc > 1000 and cSrc:find("AKPlus", 1, true) then
+                cachedSrc = cSrc
+            end
+        end
+
         local urls = {
             genv._AKPlusUrl,
             "https://raw.githubusercontent.com/s3rvxnt/UniversalUtilities/main/AKPlus",
             "https://raw.githubusercontent.com/s3rvxnt/UniversalUtilities/main/TempAkAdminFix",
         }
-        local ls = genv._AKOrigLs or genv.loadstring or loadstring
+        local chosenSrc = nil
+        local cachedBuild = parseBuild(cachedSrc)
         for i = 1, 3 do
             local u = urls[i]
             if type(u) == "string" and #u > 10 then
                 local ok, src = pcall(game.HttpGet, game, u)
                 if ok and type(src) == "string" and #src > 1000 and src:find("AKPlus", 1, true) then
-                    local fn = ls and ls(src)
-                    if fn then
-                        pcall(fn)
-                        return
+                    if parseBuild(src) >= cachedBuild then
+                        chosenSrc = src
+                        if type(wrf) == "function" then
+                            pcall(wrf, "_akplus_cache.lua", src)
+                        end
+                    else
+                        chosenSrc = cachedSrc
                     end
+                    break
                 end
+            end
+        end
+        if not chosenSrc then
+            chosenSrc = cachedSrc
+        end
+
+        local ls = genv._AKOrigLs or genv.loadstring or loadstring
+        if chosenSrc and ls then
+            local fn = ls(chosenSrc)
+            if fn then
+                pcall(fn)
             end
         end
     end)
@@ -2423,16 +2596,14 @@ local function patchMovementUIAndCommands()
         cmds["!visible"] = unInvisCmd
         cmds["!reexecute"] = reexecCmd
 
-        for _, rjKey in ipairs({ "!rj", "!rejoin" }) do
+        for _, rjKey in ipairs({ "!rj", "!rejoin", "!serverhop" }) do
             local curFn = cmds[rjKey]
             if type(curFn) == "function" and curFn ~= genv["_AKWrapped_" .. rjKey] then
-                if not genv["_AKOrigCmd_" .. rjKey] then
-                    genv["_AKOrigCmd_" .. rjKey] = curFn
-                end
-                local origRj = genv["_AKOrigCmd_" .. rjKey]
+                genv["_AKOrigCmd_" .. rjKey] = curFn
+                local origRj = curFn
                 local wrappedRj = function(...)
                     if type(genv._AKQueueTeleport) == "function" then
-                        pcall(genv._AKQueueTeleport)
+                        pcall(genv._AKQueueTeleport, false)
                     end
                     return origRj(...)
                 end
@@ -2498,6 +2669,9 @@ local function patchMovementUIAndCommands()
     -- 3B. Patch CoreGui.AKAdmin2 Movement Tab (WalkSpeed sync + CFrame Speed Slider Card) & Commands Tab
     local gui = findGui("AKAdmin2")
     if not gui then return true end
+    if gui:GetAttribute("_AKPlusCardsInjected") then
+        return true
+    end
 
     local wsCard, movSf
     for _, d in ipairs(gui:GetDescendants()) do
@@ -2693,10 +2867,11 @@ local function patchMovementUIAndCommands()
                     return card
                 end
 
-                local speedCard = addCmdCard("!speed", "Set character WalkSpeed [number, off]", "gauge", 81)
+                    local speedCard = addCmdCard("!speed", "Set character WalkSpeed [number, off]", "gauge", 81)
                 local cfSpeedCard = addCmdCard("!cfspeed", "Set CFrame movement speed [number, off]", "zap", 17)
                 local invisCard = addCmdCard("!invis", "Toggle FE invisibility with 0.5 ghost preview [on, off]", "eye-off", 45)
                 local unInvisCard = addCmdCard("!uninvis", "Become visible again at current ghost position", "eye", 95)
+                gui:SetAttribute("_AKPlusCardsInjected", true)
 
                 -- Hook Commands search TextBox so searching filters custom AKPlus commands too
                 for _, tb in ipairs(gui:GetDescendants()) do
@@ -2745,25 +2920,23 @@ local function hookAndApplyAll()
             pcall(genv._AKPatchTranslator, ak)
         end
 
-        if type(ak.reanimRun) == "function" then
-            if not genv._AKOrigReanimRun then
-                genv._AKOrigReanimRun = ak.reanimRun
-            end
-            local origRun = genv._AKOrigReanimRun
-            ak.reanimRun = function(...)
+        if type(ak.reanimRun) == "function" and ak.reanimRun ~= genv._AKWrappedReanimRun then
+            genv._AKOrigReanimRun = ak.reanimRun
+            local origRun = ak.reanimRun
+            local wrappedRun = function(...)
                 local r = origRun(...)
                 task.defer(patchAKReanimSession)
                 return r
             end
+            genv._AKWrappedReanimRun = wrappedRun
+            ak.reanimRun = wrappedRun
         end
 
         -- Scoped CoreGui scan accelerator for !antivcban (vcRun / vcBuild)
         for _, vcKey in ipairs({ "vcRun", "vcBuild" }) do
             if type(ak[vcKey]) == "function" and ak[vcKey] ~= genv["_AKWrapped_" .. vcKey] then
-                if not genv["_AKOrig_" .. vcKey] then
-                    genv["_AKOrig_" .. vcKey] = ak[vcKey]
-                end
-                local origVcFn = genv["_AKOrig_" .. vcKey]
+                genv["_AKOrig_" .. vcKey] = ak[vcKey]
+                local origVcFn = ak[vcKey]
                 local wrappedVcFn = function(...)
                     local th = coroutine and coroutine.running and coroutine.running() or nil
                     local vct = genv._AKVcThreads
@@ -2786,18 +2959,42 @@ local function hookAndApplyAll()
 
         -- Hook AKUI.reexecGo so clicking Re-execute reloads AKPlus instead of vanilla AK Admin
         if type(ak.reexecGo) == "function" and ak.reexecGo ~= genv._AKWrappedReexecGo then
-            if not genv._AKOrigReexecGo then
-                genv._AKOrigReexecGo = ak.reexecGo
-            end
+            genv._AKOrigReexecGo = ak.reexecGo
             local wrappedReexec = function()
                 runAKPlusReload()
             end
             genv._AKWrappedReexecGo = wrappedReexec
             ak.reexecGo = wrappedReexec
         end
+
+        -- Hook any UI Rejoin buttons directly as well
+        local gui = findGui("AKAdmin2")
+        if gui and not gui:GetAttribute("_AKPlusRejoinBtnsHooked") then
+            local hookedAny = false
+            for _, d in ipairs(gui:GetDescendants()) do
+                if d:IsA("TextButton") and (d.Text == "Rejoin" or d.Text == "Server Hop") then
+                    hookedAny = true
+                    trackConn(d.MouseButton1Down:Connect(function()
+                        if type(genv._AKQueueTeleport) == "function" then
+                            pcall(genv._AKQueueTeleport, false)
+                        end
+                    end))
+                end
+            end
+            if hookedAny then
+                gui:SetAttribute("_AKPlusRejoinBtnsHooked", true)
+            end
+        end
     end
     patchAKReanimSession()
     patchMovementUIAndCommands()
+end
+
+genv._AKOnStage3Done = function()
+    hookAndApplyAll()
+    if task and task.delay then
+        task.delay(0.5, hookAndApplyAll)
+    end
 end
 
 do
@@ -2806,14 +3003,28 @@ do
         hookAndApplyAll()
     else
         task.spawn(function()
+            if coroutine and coroutine.running then
+                local th = coroutine.running()
+                if th then
+                    local ig = genv._OmniIgnoredThreads
+                    if type(ig) ~= "table" then
+                        ig = setmetatable({}, { __mode = "k" })
+                        genv._OmniIgnoredThreads = ig
+                    end
+                    ig[th] = true
+                end
+            end
+            local rawW = genv._KernelOrigTaskWait or task.wait
             local deadline = os.clock() + 60
             while os.clock() < deadline do
                 local g2 = findGui("AKAdmin2")
                 if type(genv.AKUI) == "table" and g2 and g2:FindFirstChild("!jump", true) then
                     break
                 end
-                task.wait(0.1)
+                rawW(0.05)
             end
+            hookAndApplyAll()
+            rawW(0.6)
             hookAndApplyAll()
         end)
     end
@@ -2822,6 +3033,13 @@ end
 genv._AKReanimBoosterUnload = function()
     cfSpeedVal = 0
     disableInvisible(true)
+    pcall(function()
+        local g2 = findGui("AKAdmin2")
+        if g2 then
+            g2:SetAttribute("_AKPlusCardsInjected", nil)
+            g2:SetAttribute("_AKPlusRejoinBtnsHooked", nil)
+        end
+    end)
     for i = 1, #activeConns do
         pcall(function() activeConns[i]:Disconnect() end)
     end
