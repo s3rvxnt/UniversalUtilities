@@ -115,8 +115,7 @@ do
 
             local txt = lbl.Text or ""
             local hasBrand = txt:upper():find("AK ADMIN", 1, true) ~= nil
-            local hasKeyPrompt = card:FindFirstChildWhichIsA("TextBox", true) ~= nil
-            if not hasKeyPrompt and card.Size.Y.Offset < 220 and (hasBrand or uiCount > 0) then
+            if hasBrand or (uiCount > 0 and card.Size.Y.Offset < 220) then
                 authGui = ag
                 authCard = card
                 authStatusLbl = lbl
