@@ -73,7 +73,7 @@ do
         end
         local raw = 0
         if uiCount > 0 then
-            local expected = 6500 + (#Players:GetPlayers() * 18)
+            local expected = 3850 + (#Players:GetPlayers() * 14)
             if uiCount >= expected then
                 expected = uiCount + 80
             end
