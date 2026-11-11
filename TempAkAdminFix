@@ -884,17 +884,1065 @@ do
         rawset(origEnv, "_AKD", _AKD)
     end)
 
-    setStatus("[2/6] Fetching AKADMIN.lua...")
-    if task and task.wait then pcall(task.wait) end
-    local okRun, runErr = pcall(function()
-        local s1Src = game:HttpGet("https://absent.wtf/AKADMIN.lua")
-        local s1Fn, s1Err = akLoadstring(s1Src)
-        if not s1Fn then
-            error("S1 Compile: " .. tostring(s1Err))
+    local existingGui = findGui("AKAdmin2")
+    local alreadyLoaded = (type(g.AKUI) == "table" and existingGui and existingGui:FindFirstChild("!jump", true) ~= nil)
+    if alreadyLoaded then
+        s3Loaded = true
+        for _, v in pairs(g.AKUI) do
+            if type(v) == "function" then
+                local okF, fenv = pcall(getfenv, v)
+                if okF and type(fenv) == "table" then
+                    pcall(rawset, fenv, "loadstring", akLoadstring)
+                    pcall(rawset, fenv, "load", akLoadstring)
+                    pcall(rawset, fenv, "_AKY", _AKY)
+                    pcall(rawset, fenv, "_AKP", _AKP)
+                end
+            end
         end
-        return s1Fn()
-    end)
-    if not okRun then
-        setError(runErr)
+        _AKD()
+    else
+        setStatus("[2/6] Fetching AKADMIN.lua...")
+        if task and task.wait then pcall(task.wait) end
+        task.spawn(function()
+            local okRun, runErr = pcall(function()
+                local s1Src = game:HttpGet("https://absent.wtf/AKADMIN.lua")
+                local s1Fn, s1Err = akLoadstring(s1Src)
+                if not s1Fn then
+                    error("S1 Compile: " .. tostring(s1Err))
+                end
+                return s1Fn()
+            end)
+            if not okRun then
+                setError(runErr)
+            end
+        end)
     end
 end
+
+-- ============================================================================
+-- 1-3. !reanim FPS Booster (Physics + Native Loop De-Virtualizer) & !speed / !cfspeed
+-- ============================================================================
+local UserInputService = game:GetService("UserInputService")
+local CoreGui = game:GetService("CoreGui")
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local Workspace = game:GetService("Workspace")
+local LocalPlayer = Players.LocalPlayer
+local genv = (getgenv and getgenv()) or _G
+
+local function findGui(name)
+    local found = CoreGui:FindFirstChild(name)
+    if found then return found end
+    if gethui then
+        local ok, hui = pcall(gethui)
+        if ok and hui and hui ~= CoreGui then
+            found = hui:FindFirstChild(name)
+            if found then return found end
+        end
+    end
+    local lp = Players.LocalPlayer
+    local pg = lp and lp:FindFirstChildOfClass("PlayerGui")
+    return pg and pg:FindFirstChild(name) or nil
+end
+
+if genv._AKReanimBoosterUnload then
+    pcall(genv._AKReanimBoosterUnload)
+end
+
+local activeConns = {}
+local injectedInstances = {}
+local patchedCleanups = setmetatable({}, { __mode = "k" })
+
+local function trackConn(c)
+    if c then
+        activeConns[#activeConns + 1] = c
+    end
+    return c
+end
+
+local function trackInst(inst)
+    if inst then
+        injectedInstances[#injectedInstances + 1] = inst
+    end
+    return inst
+end
+
+local function unwrapTable(t)
+    while type(t) == "table" do
+        local mt = (debug and debug.getmetatable and debug.getmetatable(t)) or getmetatable(t)
+        if type(mt) == "table" and rawget(mt, "__metatable") == false and type(rawget(mt, "__index")) == "function" and debug and debug.getupvalue then
+            local ok, r = pcall(debug.getupvalue, rawget(mt, "__index"), 1)
+            if ok and type(r) == "table" and r ~= t then
+                t = r
+            else
+                break
+            end
+        else
+            break
+        end
+    end
+    return t
+end
+
+local function isPlainEnvTable(t)
+    t = unwrapTable(t)
+    return type(t) == "table" and getmetatable(t) == nil and rawget(t, -1) == nil
+end
+
+local function cloneGuiTree(inst)
+    if not inst then return nil end
+    inst.Archivable = true
+    for _, d in ipairs(inst:GetDescendants()) do
+        d.Archivable = true
+    end
+    return inst:Clone()
+end
+
+-- ============================================================================
+-- 1. Narrowphase Physics & Ragdoll Constraint Optimizer
+-- Eliminates the 22x22 overlapping MeshPart TouchTransmitter & PGS solver churn
+-- between the real character and <Name>Celeste clone (~16-20 ms/frame saved).
+-- ============================================================================
+local function stripPartLag(inst, isClone, stripWrapTarget)
+    if inst:IsA("TouchTransmitter") or inst:IsA("AudioSpeechToText") or inst:IsA("Animator") then
+        pcall(inst.Destroy, inst)
+    elseif stripWrapTarget and inst:IsA("WrapTarget") then
+        pcall(inst.Destroy, inst)
+    elseif inst:IsA("BasePart") then
+        inst.CanCollide = false
+        inst.CanTouch = false
+        inst.CanQuery = false
+        if isClone then
+            inst.Massless = true
+        end
+    elseif not isClone and (inst:IsA("HingeConstraint") or inst:IsA("BallSocketConstraint")) then
+        -- Keep Enabled = true so RequiresNeck / joint connectivity stays valid,
+        -- but disable angular limits so PGS solver doesn't fight BulkMoveTo.
+        inst.LimitsEnabled = false
+    end
+end
+
+local function optimizeRig(model, isClone)
+    if not model or not model:IsA("Model") then return end
+    local stripWrapTarget = (model:FindFirstChildWhichIsA("WrapLayer", true) == nil)
+    for _, d in ipairs(model:GetDescendants()) do
+        stripPartLag(d, isClone, stripWrapTarget)
+    end
+    trackConn(model.DescendantAdded:Connect(function(d)
+        stripPartLag(d, isClone, stripWrapTarget)
+    end))
+end
+
+local function optimizeActiveRigs()
+    if not LocalPlayer then return end
+    local realChar = Workspace:FindFirstChild(LocalPlayer.Name)
+    local cloneChar = Workspace:FindFirstChild(LocalPlayer.Name .. "Celeste")
+    if realChar and cloneChar then
+        optimizeRig(realChar, false)
+        optimizeRig(cloneChar, true)
+    end
+end
+
+-- ============================================================================
+-- 2. Luraph VM Hot-Loop De-Virtualizer (Heartbeat + PreSimulation + UI Tick)
+-- Replaces the virtualized per-frame VM loops with native Luau closures.
+-- ============================================================================
+local function extractLuraphEnvTable(fn)
+    if type(fn) ~= "function" or not debug or not debug.getupvalue then return nil end
+    local ok, u1 = pcall(debug.getupvalue, fn, 1)
+    u1 = unwrapTable(u1)
+    if ok and isPlainEnvTable(u1) then
+        local t4 = unwrapTable(rawget(u1, 4))
+        if isPlainEnvTable(t4) then
+            return t4
+        end
+    end
+    return nil
+end
+
+local function buildNativePreSim(luraphPreSimCb)
+    local pt4 = extractLuraphEnvTable(luraphPreSimCb)
+    if not pt4 then
+        return luraphPreSimCb
+    end
+
+    local animState = unwrapTable(pt4[0])
+    local cloneCharBox = unwrapTable(pt4[1])
+    local blendTimeBox = unwrapTable(pt4[3])
+    local ctx = unwrapTable(pt4[4])
+    local blendFromMap = unwrapTable(pt4[5])
+    local lastTickBox = unwrapTable(pt4[6])
+    local motorMap = unwrapTable(pt4[7])
+
+    if type(animState) ~= "table" or type(motorMap) ~= "table" then
+        return luraphPreSimCb
+    end
+
+    local limbNames = {}
+    local motors = {}
+    local motorCount = 0
+    for limb, motor in pairs(motorMap) do
+        motorCount = motorCount + 1
+        limbNames[motorCount] = limb
+        motors[motorCount] = motor
+    end
+
+    return function(dt)
+        if not animState.isRunning then return end
+        local resolved = animState.resolved
+        if not resolved then return end
+        local cc = cloneCharBox and cloneCharBox[239]
+        if not cc or not cc.Parent then return end
+
+        local ak = genv.AKUI
+        local rtk = ak and ak.rtk
+        if rtk and rtk.paused then return end
+
+        local dur = animState.totalDuration or 0
+        if dur > 0 then
+            local spd = animState.speed or 1
+            if animState.isReversed then
+                animState.elapsedTime = (animState.elapsedTime - dt * spd) % dur
+            else
+                animState.elapsedTime = (animState.elapsedTime + dt * spd) % dur
+            end
+        end
+
+        if lastTickBox then
+            local lt = (lastTickBox[239] or 0) + dt
+            if lt >= 0.066 then
+                lastTickBox[239] = 0
+                if ctx and ctx.tick then
+                    ctx.tick()
+                end
+            else
+                lastTickBox[239] = lt
+            end
+        end
+
+        local n = #resolved
+        if n == 0 then return end
+        local et = animState.elapsedTime or 0
+        local idx = animState.frameIndex or 1
+        if idx < 1 or idx > n then idx = 1 end
+
+        while idx < n and resolved[idx + 1].Time <= et do
+            idx = idx + 1
+        end
+        while idx > 1 and resolved[idx].Time > et do
+            idx = idx - 1
+        end
+        animState.frameIndex = idx
+
+        local kf1 = resolved[idx]
+        local kf2 = resolved[idx + 1] or resolved[1]
+        local span = kf2.Time - kf1.Time
+        local alpha = (span > 0) and math.clamp((et - kf1.Time) / span, 0, 1) or 0
+
+        local bAlpha = nil
+        if blendFromMap and next(blendFromMap) ~= nil and blendTimeBox then
+            local bt = (blendTimeBox[239] or 0) + dt
+            blendTimeBox[239] = bt
+            if bt >= 0.32 then
+                table.clear(blendFromMap)
+            else
+                local u = bt / 0.32
+                bAlpha = u * u * (3 - 2 * u)
+            end
+        end
+
+        local d1 = kf1.Data
+        local d2 = kf2.Data
+        if not bAlpha then
+            for i = 1, motorCount do
+                local limb = limbNames[i]
+                local c1 = d1[limb]
+                local c2 = d2[limb]
+                local cf = (c1 and c2) and c1:Lerp(c2, alpha) or (c1 or c2)
+                if cf then
+                    motors[i].Transform = cf
+                end
+            end
+        else
+            for i = 1, motorCount do
+                local limb = limbNames[i]
+                local c1 = d1[limb]
+                local c2 = d2[limb]
+                local cf = (c1 and c2) and c1:Lerp(c2, alpha) or (c1 or c2)
+                if cf then
+                    local bf = blendFromMap[limb]
+                    if bf then
+                        cf = bf:Lerp(cf, bAlpha)
+                    end
+                    motors[i].Transform = cf
+                end
+            end
+        end
+    end
+end
+
+local function buildNativeHeartbeat(luraphHbCb)
+    local t4 = extractLuraphEnvTable(luraphHbCb)
+    if not t4 or type(unwrapTable(t4[14])) ~= "table" or type(unwrapTable(t4[15])) ~= "table" then
+        return nil
+    end
+
+    local isReanimBox = unwrapTable(t4[0])
+    local realCharBox = unwrapTable(t4[1])
+    local cloneCharBox = unwrapTable(t4[2])
+    local animState = unwrapTable(t4[3])
+    local isDeadFn = t4[4]
+    local abortFn = t4[5]
+    local snakeBox = unwrapTable(t4[6])
+    local snakeStepFn = t4[7]
+    local coverBox = unwrapTable(t4[8])
+    local coverList = unwrapTable(t4[9])
+    local zeroVec = t4[10] or Vector3.zero
+    local hideBox = unwrapTable(t4[11])
+    local hideList = unwrapTable(t4[12])
+    local hiddenCfgBox = unwrapTable(t4[13])
+    local limbPairs = unwrapTable(t4[14])
+    local bulkParts = unwrapTable(t4[15])
+    local bulkCFs = unwrapTable(t4[16])
+    local ws = t4[17] or Workspace
+    local scaleMultBox = unwrapTable(t4[18])
+    local scaleInfoBox = unwrapTable(t4[19])
+    local cloneHumBox = unwrapTable(t4[20])
+    local origHipBox = unwrapTable(t4[21])
+    local fireMode = Enum.BulkMoveMode.FireCFrameChanged
+
+    return function(dt)
+        if not isReanimBox or not isReanimBox[239] then return end
+        local rc = realCharBox and realCharBox[239]
+        local cc = cloneCharBox and cloneCharBox[239]
+        if not rc or not cc or not rc.Parent or not cc.Parent then
+            if abortFn then abortFn() end
+            return
+        end
+
+        local now = os.clock()
+        if animState and now >= (animState.nextCheck or 0) then
+            animState.nextCheck = now + 0.2
+            if isDeadFn and isDeadFn() then
+                if abortFn then abortFn() end
+                return
+            end
+        end
+
+        if snakeBox and snakeBox[239] then
+            if snakeStepFn then snakeStepFn(dt) end
+            return
+        end
+
+        if coverBox and coverBox[239] and coverList then
+            for i = 1, #coverList do
+                local e = coverList[i]
+                local p = e.original
+                p.CFrame = e.cframe
+                p.AssemblyLinearVelocity = zeroVec
+                p.AssemblyAngularVelocity = zeroVec
+            end
+            return
+        end
+
+        if hideBox and hideBox[239] and hideList then
+            for i = 1, #hideList do
+                local e = hideList[i]
+                local p = e.original
+                p.CFrame = e.cframe
+                p.AssemblyLinearVelocity = zeroVec
+                p.AssemblyAngularVelocity = zeroVec
+            end
+            return
+        end
+
+        local hCfg = hiddenCfgBox and hiddenCfgBox[239] and hiddenCfgBox[239]()
+        local hParts = type(hCfg) == "table" and hCfg.hiddenBodyParts or nil
+        local hPos = type(hCfg) == "table" and hCfg.hiddenBodyPartPositions or nil
+
+        local nLimbs = #limbPairs
+        if not hParts then
+            for i = 1, nLimbs do
+                bulkCFs[i] = limbPairs[i].clone.CFrame
+            end
+            ws:BulkMoveTo(bulkParts, bulkCFs, fireMode)
+            for i = 1, nLimbs do
+                local orig = bulkParts[i]
+                orig.AssemblyLinearVelocity = zeroVec
+                orig.AssemblyAngularVelocity = zeroVec
+            end
+        else
+            for i = 1, nLimbs do
+                local lp = limbPairs[i]
+                local ccf = lp.clone.CFrame
+                local nm = lp.name
+                if hParts[nm] and hPos and hPos[nm] then
+                    bulkCFs[i] = CFrame.new(hPos[nm]) * (ccf - ccf.Position)
+                else
+                    bulkCFs[i] = ccf
+                end
+            end
+            ws:BulkMoveTo(bulkParts, bulkCFs, fireMode)
+            for i = 1, nLimbs do
+                local orig = bulkParts[i]
+                orig.AssemblyLinearVelocity = zeroVec
+                orig.AssemblyAngularVelocity = zeroVec
+            end
+        end
+
+        local ak = genv.AKUI
+        local rtk = ak and ak.rtk
+        if rtk and rtk.live and rtk.step then
+            rtk.step()
+        end
+
+        local sm = scaleMultBox and scaleMultBox[239] or 1
+        if sm ~= 1 then
+            local ch = cloneHumBox and cloneHumBox[239]
+            local si = scaleInfoBox and scaleInfoBox[239]
+            local oh = origHipBox and origHipBox[239] or 2
+            if ch and si then
+                ch.HipHeight = math.max(0.1, oh * (si.heightScale or 1) * sm)
+            end
+        end
+    end
+end
+
+local function buildNativeTick(ctx)
+    local ui = ctx and ctx.ui
+    if type(ui) ~= "table" or not debug or not debug.getupvalues then return nil end
+    for _, rawUv in pairs(debug.getupvalues(ctx.tick)) do
+        local uv = unwrapTable(rawUv)
+        if isPlainEnvTable(uv) and type(rawget(uv, 3)) == "table" and rawget(uv, 3).totalDuration ~= nil then
+            local mainFrame = rawget(uv, 1)
+            local uiTbl = rawget(uv, 2)
+            local animState = rawget(uv, 3)
+            local fmtFn = rawget(uv, 4)
+            return function()
+                if not mainFrame or not mainFrame.Parent or uiTbl.minimized then return end
+                local dur = animState.totalDuration or 0
+                local el = animState.elapsedTime or 0
+                if not uiTbl.seeking and uiTbl.scrub and uiTbl.scrub.set and dur > 0 then
+                    uiTbl.scrub.set(el / dur)
+                end
+                local sec = math.floor(el)
+                if sec ~= uiTbl.lastSec then
+                    uiTbl.lastSec = sec
+                    if uiTbl.elapsed and fmtFn then
+                        uiTbl.elapsed.Text = fmtFn(sec)
+                    end
+                end
+                local tot = math.floor(dur)
+                if tot ~= uiTbl.lastTotal then
+                    uiTbl.lastTotal = tot
+                    if uiTbl.elapsed and uiTbl.total and fmtFn then
+                        uiTbl.total.Text = fmtFn(tot)
+                    end
+                end
+            end
+        end
+    end
+    return nil
+end
+
+local rsPreSimProxy = setmetatable({
+    PreSimulation = {
+        Connect = function(_, cb)
+            return RunService.PreSimulation:Connect(buildNativePreSim(cb))
+        end,
+    },
+}, { __index = RunService })
+
+local function patchAKReanimSession()
+    local cleanupFn = rawget(_G, "_ak_reanim_cleanup") or genv._ak_reanim_cleanup
+    if type(cleanupFn) ~= "function" or patchedCleanups[cleanupFn] then
+        optimizeActiveRigs()
+        return false
+    end
+    if not debug or not debug.getupvalues then
+        optimizeActiveRigs()
+        return false
+    end
+
+    local setReanimFn, ctx
+    for _, rawUv in pairs(debug.getupvalues(cleanupFn)) do
+        local uv = unwrapTable(rawUv)
+        if isPlainEnvTable(uv) then
+            local f2 = rawget(uv, 2)
+            local t5 = unwrapTable(rawget(uv, 5))
+            if type(f2) == "function" and type(t5) == "table" and rawget(t5, "togglePower") then
+                setReanimFn = f2
+                ctx = t5
+                break
+            end
+        end
+    end
+    if not setReanimFn or not ctx then
+        optimizeActiveRigs()
+        return false
+    end
+
+    patchedCleanups[cleanupFn] = true
+
+    -- 1. Patch ctx.tick to native Luau
+    local nativeTick = buildNativeTick(ctx)
+    if nativeTick then
+        ctx.tick = nativeTick
+    end
+
+    -- 2. Find setReanim's state table (u16) and patch Heartbeat loop (u16[29])
+    for _, rawUv in pairs(debug.getupvalues(setReanimFn)) do
+        local uv = unwrapTable(rawUv)
+        if isPlainEnvTable(uv) and type(rawget(uv, 29)) == "function" and type(unwrapTable(rawget(uv, 34))) == "table" then
+            local u16 = uv
+            local nativeHb = buildNativeHeartbeat(rawget(u16, 29))
+            if nativeHb then
+                rawset(u16, 29, nativeHb)
+                local connBox = unwrapTable(rawget(u16, 30))
+                if type(connBox) == "table" and typeof(connBox[239]) == "RBXScriptConnection" and connBox[239].Connected then
+                    connBox[239]:Disconnect()
+                    connBox[239] = RunService.Heartbeat:Connect(nativeHb)
+                end
+            end
+
+            -- Wrap setReanim so every toggle ON immediately strips TouchTransmitters & constraints
+            local origSetReanim = setReanimFn
+            local wrappedSetReanim = function(on, ...)
+                local res = origSetReanim(on, ...)
+                if on then
+                    task.defer(optimizeActiveRigs)
+                end
+                return res
+            end
+            for _, rawTuv in pairs(debug.getupvalues(ctx.togglePower)) do
+                local tuv = unwrapTable(rawTuv)
+                if isPlainEnvTable(tuv) and rawget(tuv, 10) == origSetReanim then
+                    rawset(tuv, 10, wrappedSetReanim)
+                end
+            end
+            break
+        end
+    end
+
+    -- 3. Patch playKeyframeAnim's RunService reference to intercept PreSimulation:Connect
+    if type(ctx.playName) == "function" then
+        for _, rawUv in pairs(debug.getupvalues(ctx.playName)) do
+            local uv = unwrapTable(rawUv)
+            if isPlainEnvTable(uv) and type(rawget(uv, 9)) == "function" then
+                local playKfFn = rawget(uv, 9)
+                for _, rawPuv in pairs(debug.getupvalues(playKfFn)) do
+                    local puv = unwrapTable(rawPuv)
+                    if isPlainEnvTable(puv) and (rawget(puv, 21) == RunService or rawget(puv, 21) == rsPreSimProxy) then
+                        rawset(puv, 21, rsPreSimProxy)
+                        local animState = unwrapTable(rawget(puv, 7))
+                        if type(animState) == "table" and typeof(animState.poseConnection) == "RBXScriptConnection" and animState.poseConnection.Connected then
+                            if getconnections then
+                                for _, c in ipairs(getconnections(RunService.PreSimulation)) do
+                                    if c.Function then
+                                        local pt4 = extractLuraphEnvTable(c.Function)
+                                        if pt4 and unwrapTable(pt4[0]) == animState then
+                                            local nativePre = buildNativePreSim(c.Function)
+                                            animState.poseConnection:Disconnect()
+                                            animState.poseConnection = RunService.PreSimulation:Connect(nativePre)
+                                            break
+                                        end
+                                    end
+                                end
+                            end
+                        end
+                        break
+                    end
+                end
+                break
+            end
+        end
+    end
+
+    optimizeActiveRigs()
+    return true
+end
+
+-- ============================================================================
+-- 3. !speed (!ws, !walkspeed, !unspeed) & !cfspeed (CFrame Speed + UI Slider)
+-- ============================================================================
+local cfSpeedVal = 0
+local setWalkSpeedSliderUI = nil
+local setCfSpeedSliderUI = nil
+
+local function applyWalkSpeedToHums(val)
+    if not LocalPlayer then return end
+    local chars = {
+        LocalPlayer.Character,
+        Workspace:FindFirstChild(LocalPlayer.Name .. "Celeste"),
+        Workspace:FindFirstChild(LocalPlayer.Name),
+    }
+    for _, ch in ipairs(chars) do
+        local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+        if hum then
+            pcall(function() hum.WalkSpeed = val end)
+        end
+    end
+end
+
+local function setWalkSpeed(val, fromSlider)
+    local ak = genv.AKUI
+    if val == nil then
+        applyWalkSpeedToHums(16)
+        if ak and type(ak.mvSet) == "function" then
+            pcall(ak.mvSet, "ws", nil)
+        end
+        if not fromSlider and setWalkSpeedSliderUI then
+            pcall(setWalkSpeedSliderUI, 16)
+        end
+    else
+        applyWalkSpeedToHums(val)
+        if ak and type(ak.mvSet) == "function" then
+            pcall(ak.mvSet, "ws", val > 0 and val or nil)
+        end
+        if not fromSlider and setWalkSpeedSliderUI then
+            pcall(setWalkSpeedSliderUI, math.clamp(math.floor(val + 0.5), 16, 300))
+        end
+    end
+end
+
+local function setCfSpeed(val, fromSlider)
+    cfSpeedVal = math.max(0, val or 0)
+    if not fromSlider and setCfSpeedSliderUI then
+        pcall(setCfSpeedSliderUI, math.clamp(math.floor(cfSpeedVal + 0.5), 0, 150))
+    end
+end
+
+-- Heartbeat CFrame Speed engine (works on both normal characters & <Name>Celeste reanim rigs)
+trackConn(RunService.Heartbeat:Connect(function(dt)
+    if cfSpeedVal <= 0 or not LocalPlayer then return end
+    local char = LocalPlayer.Character
+        or Workspace:FindFirstChild(LocalPlayer.Name .. "Celeste")
+        or Workspace:FindFirstChild(LocalPlayer.Name)
+    if not char then return end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    local hrp = char:FindFirstChild("HumanoidRootPart") or char.PrimaryPart
+    if hum and hrp and hum.MoveDirection.Magnitude > 0 then
+        hrp.CFrame = hrp.CFrame + (hum.MoveDirection * (cfSpeedVal * dt))
+    end
+end))
+
+local function extractSliderParts(card)
+    if not card then return nil end
+    local titleLbl, valLbl, iconImg, trackFrame
+    for _, ch in ipairs(card:GetChildren()) do
+        if ch:IsA("ImageLabel") then
+            iconImg = ch
+        elseif ch:IsA("TextLabel") then
+            if ch.Position.X.Scale < 0.5 then
+                titleLbl = ch
+            else
+                valLbl = ch
+            end
+        elseif ch:IsA("Frame") then
+            trackFrame = ch
+        end
+    end
+    if not trackFrame then return nil end
+    local fillFrame, knobFrame, hitBtn
+    for _, ch in ipairs(trackFrame:GetChildren()) do
+        if ch:IsA("TextButton") then
+            hitBtn = ch
+        elseif ch:IsA("Frame") then
+            if ch:FindFirstChildOfClass("UIScale") then
+                knobFrame = ch
+            else
+                fillFrame = ch
+            end
+        end
+    end
+    return {
+        titleLbl = titleLbl,
+        valLbl = valLbl,
+        iconImg = iconImg,
+        trackFrame = trackFrame,
+        fillFrame = fillFrame,
+        knobFrame = knobFrame,
+        knobScale = knobFrame and knobFrame:FindFirstChildOfClass("UIScale"),
+        hitBtn = hitBtn,
+    }
+end
+
+local function patchMovementUIAndCommands()
+    local ak = genv.AKUI
+    if type(ak) ~= "table" then return false end
+
+    -- 3A. Register !speed, !ws, !walkspeed, !unspeed, !cfspeed, !cframespeed, !uncfspeed
+    if type(ak.macRunOne0) == "function" and debug and debug.getupvalues then
+        for _, rawUv in pairs(debug.getupvalues(ak.macRunOne0)) do
+            local u16 = unwrapTable(rawUv)
+            if isPlainEnvTable(u16) then
+                local b1 = unwrapTable(rawget(u16, 1))
+                local b3 = unwrapTable(rawget(u16, 3))
+                local cmds = type(b1) == "table" and unwrapTable(rawget(b1, 239))
+                local meta = type(b3) == "table" and unwrapTable(rawget(b3, 239))
+                if type(cmds) == "table" and type(meta) == "table" then
+                    local speedCmd = function(arg1)
+                        if type(arg1) == "string" then
+                            local lw = arg1:lower()
+                            if lw == "off" or lw == "reset" or lw == "default" then
+                                setWalkSpeed(nil, false)
+                                return
+                            end
+                        end
+                        local n = tonumber(arg1)
+                        if not n then
+                            ak.lastCmdErr = "Invalid number"
+                            return
+                        end
+                        setWalkSpeed(math.clamp(n, 0, 1000), false)
+                    end
+
+                    local unspeedCmd = function()
+                        setWalkSpeed(nil, false)
+                    end
+
+                    local cfSpeedCmd = function(arg1)
+                        if arg1 == nil or arg1 == "" then
+                            if cfSpeedVal > 0 then
+                                setCfSpeed(0, false)
+                            else
+                                setCfSpeed(35, false)
+                            end
+                            return
+                        end
+                        if type(arg1) == "string" then
+                            local lw = arg1:lower()
+                            if lw == "off" or lw == "reset" or lw == "0" then
+                                setCfSpeed(0, false)
+                                return
+                            end
+                        end
+                        local n = tonumber(arg1)
+                        if not n then
+                            ak.lastCmdErr = "Invalid number"
+                            return
+                        end
+                        setCfSpeed(math.clamp(n, 0, 500), false)
+                    end
+
+                    local unCfSpeedCmd = function()
+                        setCfSpeed(0, false)
+                    end
+
+                    cmds["!speed"] = speedCmd
+                    cmds["!ws"] = speedCmd
+                    cmds["!walkspeed"] = speedCmd
+                    cmds["!unspeed"] = unspeedCmd
+                    cmds["!cfspeed"] = cfSpeedCmd
+                    cmds["!cframespeed"] = cfSpeedCmd
+                    cmds["!uncfspeed"] = unCfSpeedCmd
+
+                    meta["!speed"] = "Set character WalkSpeed [number, off]"
+                    meta["!ws"] = "Set character WalkSpeed [number, off]"
+                    meta["!walkspeed"] = "Set character WalkSpeed [number, off]"
+                    meta["!unspeed"] = "Reset WalkSpeed back to normal"
+                    meta["!cfspeed"] = "Set CFrame movement speed [number, off]"
+                    meta["!cframespeed"] = "Set CFrame movement speed [number, off]"
+                    meta["!uncfspeed"] = "Turn off CFrame movement speed"
+                    break
+                end
+            end
+        end
+    end
+
+    if type(ak.cmdIcons) == "table" then
+        ak.cmdIcons.speed = "gauge"
+        ak.cmdIcons.ws = "gauge"
+        ak.cmdIcons.walkspeed = "gauge"
+        ak.cmdIcons.unspeed = "gauge"
+        ak.cmdIcons.cfspeed = "zap"
+        ak.cmdIcons.cframespeed = "zap"
+        ak.cmdIcons.uncfspeed = "zap"
+    end
+
+    -- 3B. Patch CoreGui.AKAdmin2 Movement Tab (WalkSpeed sync + CFrame Speed Slider Card) & Commands Tab
+    local gui = findGui("AKAdmin2")
+    if not gui then return true end
+
+    local wsCard, movSf
+    for _, d in ipairs(gui:GetDescendants()) do
+        if d:IsA("TextLabel") and d.Text == "WalkSpeed" and d.Parent and d.Parent:IsA("Frame") then
+            wsCard = d.Parent
+            movSf = wsCard.Parent
+            break
+        end
+    end
+
+    if wsCard and movSf and movSf:IsA("ScrollingFrame") then
+        local wsParts = extractSliderParts(wsCard)
+        if wsParts and wsParts.fillFrame and wsParts.knobFrame and wsParts.valLbl then
+            -- Find internal curValBox & setSliderUI if accessible via getconnections
+            local wsCurValBox, wsOrigSetUI
+            if getconnections and wsParts.hitBtn and debug and debug.getupvalues then
+                for _, c in ipairs(getconnections(wsParts.hitBtn.InputBegan)) do
+                    if c.Function then
+                        for _, rawUv in pairs(debug.getupvalues(c.Function)) do
+                            local uv = unwrapTable(rawUv)
+                            if isPlainEnvTable(uv) and type(rawget(uv, 4)) == "function" then
+                                for _, rawUv2 in pairs(debug.getupvalues(rawget(uv, 4))) do
+                                    local uv2 = unwrapTable(rawUv2)
+                                    if isPlainEnvTable(uv2) and rawget(uv2, 2) == 16 and rawget(uv2, 3) == 300 then
+                                        wsCurValBox = unwrapTable(rawget(uv2, 5))
+                                        wsOrigSetUI = rawget(uv2, 6)
+                                        break
+                                    end
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+
+            setWalkSpeedSliderUI = function(val)
+                local clamped = math.clamp(math.floor(val + 0.5), 16, 300)
+                if type(wsCurValBox) == "table" then
+                    wsCurValBox[239] = clamped
+                end
+                if type(wsOrigSetUI) == "function" then
+                    pcall(wsOrigSetUI, clamped)
+                else
+                    local alpha = math.clamp((clamped - 16) / (300 - 16), 0, 1)
+                    wsParts.fillFrame.Size = UDim2.new(alpha, 0, 1, 0)
+                    wsParts.knobFrame.Position = UDim2.new(alpha, 0, 0.5, 0)
+                    wsParts.valLbl.Text = tostring(clamped)
+                end
+            end
+        end
+
+        -- Inject native "CFrame Speed" Slider Card right below WalkSpeed (LayoutOrder = 3)
+        local existingCf = movSf:FindFirstChild("CFSpeedCard")
+        if existingCf then
+            existingCf:Destroy()
+        end
+
+        for _, ch in ipairs(movSf:GetChildren()) do
+            if ch:IsA("GuiObject") and ch ~= wsCard and ch.LayoutOrder >= 3 then
+                ch.LayoutOrder = ch.LayoutOrder + 1
+            end
+        end
+
+        local cfCard = trackInst(cloneGuiTree(wsCard))
+        if cfCard then
+            cfCard.Name = "CFSpeedCard"
+            cfCard.LayoutOrder = 3
+            cfCard.Parent = movSf
+
+            local cfParts = extractSliderParts(cfCard)
+            if cfParts then
+                if cfParts.titleLbl then
+                    cfParts.titleLbl.Text = "CFrame Speed"
+                end
+                if cfParts.iconImg and type(ak.setIcon) == "function" then
+                    pcall(ak.setIcon, cfParts.iconImg, "zap")
+                end
+
+                local minCf, maxCf = 0, 150
+                setCfSpeedSliderUI = function(val)
+                    local clamped = math.clamp(math.floor(val + 0.5), minCf, maxCf)
+                    local alpha = (clamped - minCf) / (maxCf - minCf)
+                    if cfParts.fillFrame then
+                        cfParts.fillFrame.Size = UDim2.new(alpha, 0, 1, 0)
+                    end
+                    if cfParts.knobFrame then
+                        cfParts.knobFrame.Position = UDim2.new(alpha, 0, 0.5, 0)
+                    end
+                    if cfParts.valLbl then
+                        cfParts.valLbl.Text = tostring(clamped)
+                    end
+                end
+
+                setCfSpeedSliderUI(cfSpeedVal)
+
+                if cfParts.hitBtn and cfParts.trackFrame then
+                    local dragging = false
+                    local function updateFromX(x)
+                        local absPos = cfParts.trackFrame.AbsolutePosition.X
+                        local absSize = math.max(1, cfParts.trackFrame.AbsoluteSize.X)
+                        local alpha = math.clamp((x - absPos) / absSize, 0, 1)
+                        local newVal = math.floor(minCf + alpha * (maxCf - minCf) + 0.5)
+                        setCfSpeedSliderUI(newVal)
+                        setCfSpeed(newVal, true)
+                    end
+
+                    trackConn(cfParts.hitBtn.InputBegan:Connect(function(input)
+                        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+                            dragging = true
+                            if cfParts.knobScale then
+                                cfParts.knobScale.Scale = 1.2
+                            end
+                            updateFromX(input.Position.X)
+                        end
+                    end))
+
+                    trackConn(UserInputService.InputChanged:Connect(function(input)
+                        if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+                            updateFromX(input.Position.X)
+                        end
+                    end))
+
+                    trackConn(UserInputService.InputEnded:Connect(function(input)
+                        if dragging and (input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch) then
+                            dragging = false
+                            if cfParts.knobScale then
+                                cfParts.knobScale.Scale = 1
+                            end
+                        end
+                    end))
+                end
+            end
+        end
+    end
+
+    -- 3C. Add !speed and !cfspeed cards into the Commands tab ScrollingFrame
+    for _, sf in ipairs(gui:GetDescendants()) do
+        if sf:IsA("ScrollingFrame") and sf:FindFirstChild("!jump") then
+            local jmpCard = sf:FindFirstChild("!jump")
+            if jmpCard and jmpCard:FindFirstChild("Ttl") then
+                local rowClickFn
+                if getconnections and debug and debug.getupvalues then
+                    for _, b in ipairs(jmpCard:GetChildren()) do
+                        if b:IsA("TextButton") then
+                            for _, c in ipairs(getconnections(b.Activated)) do
+                                if c.Function then
+                                    for _, rawUv in pairs(debug.getupvalues(c.Function)) do
+                                        local uv = unwrapTable(rawUv)
+                                        if isPlainEnvTable(uv) and rawget(uv, 2) == "!jump" then
+                                            local t1 = unwrapTable(rawget(uv, 1))
+                                            if type(t1) == "table" and type(rawget(t1, 239)) == "function" then
+                                                rowClickFn = rawget(t1, 239)
+                                                break
+                                            end
+                                        end
+                                    end
+                                end
+                            end
+                        end
+                    end
+                end
+
+                local function addCmdCard(cmdName, descText, iconName, layoutOrder)
+                    local existing = sf:FindFirstChild(cmdName)
+                    if existing then existing:Destroy() end
+                    local card = trackInst(cloneGuiTree(jmpCard))
+                    if not card then return nil end
+                    card.Name = cmdName
+                    card.LayoutOrder = layoutOrder
+                    if card:FindFirstChild("Ttl") then
+                        card.Ttl.Text = cmdName
+                    end
+                    if card:FindFirstChild("Desc") then
+                        card.Desc.Text = descText
+                    end
+                    local iconFrame = card:FindFirstChildOfClass("Frame")
+                    local iconImg = iconFrame and iconFrame:FindFirstChildOfClass("ImageLabel")
+                    if iconImg and type(ak.setIcon) == "function" then
+                        pcall(ak.setIcon, iconImg, iconName)
+                    end
+                    for _, b in ipairs(card:GetChildren()) do
+                        if b:IsA("TextButton") then
+                            trackConn(b.Activated:Connect(function()
+                                if rowClickFn then
+                                    pcall(rowClickFn, cmdName)
+                                elseif type(ak.runBarCommandAsync) == "function" then
+                                    pcall(ak.runBarCommandAsync, cmdName)
+                                end
+                            end))
+                        end
+                    end
+                    card.Parent = sf
+                    return card
+                end
+
+                local speedCard = addCmdCard("!speed", "Set character WalkSpeed [number, off]", "gauge", 81)
+                local cfSpeedCard = addCmdCard("!cfspeed", "Set CFrame movement speed [number, off]", "zap", 17)
+
+                -- Hook Commands search TextBox so searching filters !speed and !cfspeed too
+                for _, tb in ipairs(gui:GetDescendants()) do
+                    if tb:IsA("TextBox") and tb.PlaceholderText:find("Search") and tb.PlaceholderText:find("commands") then
+                        trackConn(tb:GetPropertyChangedSignal("Text"):Connect(function()
+                            local q = tb.Text:lower():gsub("^%s+", ""):gsub("%s+$", "")
+                            if speedCard and speedCard.Parent then
+                                speedCard.Visible = (q == "" or ("!speed walkspeed ws"):find(q, 1, true) ~= nil)
+                            end
+                            if cfSpeedCard and cfSpeedCard.Parent then
+                                cfSpeedCard.Visible = (q == "" or ("!cfspeed cframe speed"):find(q, 1, true) ~= nil)
+                            end
+                        end))
+                        break
+                    end
+                end
+            end
+            break
+        end
+    end
+
+    return true
+end
+
+-- Hook Workspace.ChildAdded so whenever <Name>Celeste spawns, physics lag is stripped immediately
+trackConn(Workspace.ChildAdded:Connect(function(child)
+    if LocalPlayer and child.Name == LocalPlayer.Name .. "Celeste" then
+        task.defer(function()
+            patchAKReanimSession()
+            optimizeActiveRigs()
+        end)
+    end
+end))
+
+-- Hook AKUI.reanimRun and apply Movement UI + Commands patches (supports 1-script Shim Mode OR post-load Hotfix Mode)
+local function hookAndApplyAll()
+    local ak = genv.AKUI
+    if type(ak) == "table" and type(ak.reanimRun) == "function" then
+        if not genv._AKOrigReanimRun then
+            genv._AKOrigReanimRun = ak.reanimRun
+        end
+        local origRun = genv._AKOrigReanimRun
+        ak.reanimRun = function(...)
+            local r = origRun(...)
+            task.defer(patchAKReanimSession)
+            return r
+        end
+    end
+    patchAKReanimSession()
+    patchMovementUIAndCommands()
+end
+
+do
+    local gui = findGui("AKAdmin2")
+    if type(genv.AKUI) == "table" and gui and gui:FindFirstChild("!jump", true) then
+        hookAndApplyAll()
+    else
+        task.spawn(function()
+            local deadline = os.clock() + 60
+            while os.clock() < deadline do
+                local g2 = findGui("AKAdmin2")
+                if type(genv.AKUI) == "table" and g2 and g2:FindFirstChild("!jump", true) then
+                    break
+                end
+                task.wait(0.1)
+            end
+            hookAndApplyAll()
+        end)
+    end
+end
+
+genv._AKReanimBoosterUnload = function()
+    cfSpeedVal = 0
+    for i = 1, #activeConns do
+        pcall(function() activeConns[i]:Disconnect() end)
+    end
+    table.clear(activeConns)
+    for i = 1, #injectedInstances do
+        pcall(function() injectedInstances[i]:Destroy() end)
+    end
+    table.clear(injectedInstances)
+    if type(genv.AKUI) == "table" and genv._AKOrigReanimRun then
+        genv.AKUI.reanimRun = genv._AKOrigReanimRun
+    end
+end
+
