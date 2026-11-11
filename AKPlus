@@ -350,17 +350,17 @@ do
     if type(rawSetFpsCap) == "function" then
         safeSetFpsCap = c(function(cap)
             local n = tonumber(cap)
-            if not n or n <= 0 or n > 9999 then
-                local ok9, res9 = pcall(rawSetFpsCap, 9999)
+            if n and (n == 0 or n > 2147483647) then
+                local ok0, res0 = pcall(rawSetFpsCap, 0)
                 if type(rawGetFpsCap) == "function" then
                     local okG, cur = pcall(rawGetFpsCap)
-                    if okG and type(cur) == "number" and cur <= 60 then
-                        pcall(rawSetFpsCap, 0)
+                    if okG and type(cur) == "number" and cur > 0 and cur <= 60 then
+                        pcall(rawSetFpsCap, 999999)
                     end
                 end
-                return ok9 and res9 or nil
+                return ok0 and res0 or nil
             end
-            local okN, resN = pcall(rawSetFpsCap, math.floor(n))
+            local okN, resN = pcall(rawSetFpsCap, cap)
             return okN and resN or nil
         end)
         g._AKLastShimSetFpsCap = safeSetFpsCap
@@ -1290,7 +1290,7 @@ do
                     lastStrideClock = now
                     if dt > maxDt then maxDt = dt end
                     if dt > 0.100 then spikeCount = spikeCount + 1 end
-                    curFps = math.clamp(math.floor(1 / math.max(dt, 0.001) + 0.5), 1, 240)
+                    curFps = math.clamp(math.floor(1 / math.max(dt, 0.0001) + 0.5), 1, 9999)
                     updatePill(dt)
                     checkPillWatchdog(now)
                 end)
@@ -1486,7 +1486,21 @@ do
         end)
     end
 
+    local subDepth = 0
+    local function finishSub(ok, ...)
+        subDepth = math.max(0, subDepth - 1)
+        if not ok then
+            error((...), 0)
+        end
+        return ...
+    end
+    local function callSubProto(proto, ...)
+        subDepth = subDepth + 1
+        return finishSub(pcall(proto, ...))
+    end
+
     local function _AKY(step)
+        if s3Done and subDepth <= 0 then return end
         local n = step or 1
         yCount = yCount + n
         strideLeft = strideLeft - n
@@ -2399,7 +2413,7 @@ end)
                         g._AKSubCacheHits = (g._AKSubCacheHits or 0) + 1
                         local proto = cached.fn
                         pcall(setfenv, proto, env)
-                        local wrapper = function(...) return proto(...) end
+                        local wrapper = function(...) return callSubProto(proto, ...) end
                         pcall(setfenv, wrapper, env)
                         return wrapper, nil
                     end
@@ -2542,7 +2556,7 @@ end)
                 subCache[subSig] = { fn = fn, bVar = bVar, bVal = bVal }
                 subCacheOrder[#subCacheOrder + 1] = subSig
                 local proto = fn
-                fn = function(...) return proto(...) end
+                fn = function(...) return callSubProto(proto, ...) end
                 pcall(setfenv, fn, env)
             end
             if isSubVM and canYield then
@@ -4090,18 +4104,6 @@ local function enforceFpsSettings()
     local ak = genv.AKUI
     if type(ak) == "table" and type(ak.fpsApply) == "function" then
         pcall(ak.fpsApply)
-    end
-    local sfc = genv._AKLastShimSetFpsCap or genv.setfpscap or genv._AKOrigSetFpsCap or setfpscap or set_fps_cap or genv.set_fps_cap
-    if type(sfc) == "function" then
-        local prefs = (type(ak) == "table" and type(ak.prefs) == "table") and ak.prefs or nil
-        local explicitCap = tonumber(prefs and (prefs.fpsCap or prefs.fps or prefs.maxFps)) or tonumber(genv.AK_FPS_VALUE)
-        if prefs and prefs.fpsUnlimited == false and explicitCap and explicitCap > 0 and explicitCap <= 9999 then
-            pcall(sfc, explicitCap)
-        elseif explicitCap and explicitCap > 60 and explicitCap <= 9999 and (not prefs or prefs.fpsUnlimited == false) then
-            pcall(sfc, explicitCap)
-        else
-            pcall(sfc, 9999)
-        end
     end
 end
 
