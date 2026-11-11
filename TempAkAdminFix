@@ -1,8 +1,8 @@
 -- ============================================================================
--- UNIVERSAL EXECUTOR COMPATIBILITY & SLOW-CPU ANTI-FREEZE SHIM (v7)
+-- UNIVERSAL EXECUTOR COMPATIBILITY & SLOW-CPU ANTI-FREEZE SHIM (v8)
 -- Fixes mobile/sandboxed executors (Delta, Codex, Vega X, Hydrogen, Solara,
--- Xeno, Madium, Helios, etc.) + built-in diagnostic pill + live AKAuthGui 0-100%
--- progress bar hijack + on-pill compile/runtime error reporting.
+-- Xeno, Madium, Helios, Potassium, etc.) + built-in diagnostic pill + live
+-- AKAuthGui 0-100% progress bar hijack + post-load sub-command VM anti-freeze.
 -- ============================================================================
 do
     local callerEnv = getfenv and getfenv(1) or nil
@@ -115,7 +115,8 @@ do
 
             local txt = lbl.Text or ""
             local hasBrand = txt:upper():find("AK ADMIN", 1, true) ~= nil
-            if hasBrand or (uiCount > 0 and card.Size.Y.Offset < 220) then
+            local hasKeyPrompt = card:FindFirstChildWhichIsA("TextBox", true) ~= nil
+            if not hasKeyPrompt and card.Size.Y.Offset < 220 and (hasBrand or uiCount > 0) then
                 authGui = ag
                 authCard = card
                 authStatusLbl = lbl
@@ -260,7 +261,7 @@ do
         local pctStr = (not hasError and (uiCount > 0 or authLatched))
             and string.format(" (%d%% | UI: %d)", math.floor(math.max(visPct, computeRawPct()) + 0.5), uiCount)
             or ""
-        statusLbl.Text = string.format("AK Fix v7 [%s] | %s%s", execName, curStage, pctStr)
+        statusLbl.Text = string.format("AK Fix v8 [%s] | %s%s", execName, curStage, pctStr)
         subLbl.Text = string.format(
             "%.1fs | FPS: %d | MaxLag: %.0fms | Spikes: %d | Yields: %d",
             now - t0, curFps, maxDt * 1000, spikeCount, yieldTotal
@@ -345,8 +346,12 @@ do
 
     local s3Thread = nil
     local s3Done = false
+    local s3Loaded = false
     local s3Start = os.clock()
     local yCount = 0
+    local lastCheck = 0
+    local burstStart = 0
+    local subBlobIdx = 0
 
     local function setError(err)
         local clean = tostring(err or "Unknown error")
@@ -357,7 +362,7 @@ do
         hasError = true
         s3Done = true
         curStage = "ERR: " .. clean
-        pcall(warn, "[AK Fix v7 Error]", err)
+        pcall(warn, "[AK Fix v8 Error]", err)
         pcall(function()
             if hbConn then hbConn:Disconnect(); hbConn = nil end
             if pillStroke then
@@ -467,34 +472,55 @@ do
     end
 
     local function _AKY()
-        if s3Done then return end
         yCount = yCount + 1
         if yCount % 64 ~= 0 then return end
-        if not s3Thread and coroutine and coroutine.running then
-            s3Thread = coroutine.running()
-        end
-        if s3Thread and coroutine and coroutine.running and coroutine.running() ~= s3Thread then
-            return
-        end
         local now = os.clock()
-        if now - lastY > 0.012 then
-            if coroutine and coroutine.isyieldable and not coroutine.isyieldable() then
-                yCount = 48
+        if not s3Done then
+            if not s3Thread and coroutine and coroutine.running then
+                s3Thread = coroutine.running()
+            end
+            if s3Thread and coroutine and coroutine.running and coroutine.running() ~= s3Thread then
                 return
             end
-            if task and task.wait then
-                yieldTotal = yieldTotal + 1
-                if yieldTotal % 8 == 0 then
-                    local hasUi = findGui("AKAdmin2") ~= nil
-                    setStatus(hasUi and "[6/6] Building UI..." or "[5/6] Running VM...")
+            if now - lastY > 0.012 then
+                if coroutine and coroutine.isyieldable and not coroutine.isyieldable() then
+                    yCount = 48
+                    return
                 end
-                local ok = pcall(task.wait)
-                if ok then
-                    lastY = os.clock()
-                    if g.AKUI and g.AKUI.initDone then
-                        _AKD()
-                    elseif (lastY - s3Start > 60) and not findGui("AKAuthGui") then
-                        _AKD()
+                if task and task.wait then
+                    yieldTotal = yieldTotal + 1
+                    if yieldTotal % 8 == 0 then
+                        local hasUi = findGui("AKAdmin2") ~= nil
+                        setStatus(hasUi and "[6/6] Building UI..." or "[5/6] Running VM...")
+                    end
+                    local ok = pcall(task.wait)
+                    if ok then
+                        lastY = os.clock()
+                        lastCheck = lastY
+                        burstStart = lastY
+                        if g.AKUI and g.AKUI.initDone then
+                            _AKD()
+                        elseif (lastY - s3Start > 60) and not findGui("AKAuthGui") then
+                            _AKD()
+                        end
+                    end
+                end
+            end
+        else
+            if now - lastCheck > 0.004 then
+                burstStart = now
+            end
+            lastCheck = now
+            if now - burstStart > 0.012 then
+                if coroutine and coroutine.isyieldable and not coroutine.isyieldable() then
+                    return
+                end
+                if task and task.wait then
+                    local ok = pcall(task.wait)
+                    if ok then
+                        local after = os.clock()
+                        lastCheck = after
+                        burstStart = after
                     end
                 end
             end
@@ -677,49 +703,68 @@ do
     }
 
     local selfBindPrefix = "do local _e=(getgenv and getgenv()._AKEnv)or(_G and _G._AKEnv)or(shared and shared._AKEnv);if _e and setfenv then setfenv(1,_e)end end;"
+    local akLoadstring
 
-    g.loadstring = function(...)
+    akLoadstring = function(...)
         local src, name = ...
         local isStage2 = false
         local isStage3 = false
+        local isSubVM = false
+        local bVar, bVal
+        local canYield = task and task.wait and (not coroutine or not coroutine.isyieldable or coroutine.isyieldable())
         if type(src) == "string" then
             if src:find("DecompressBuffer", 1, true) then
                 isStage2 = true
                 setStatus("[3/6] Decompressing Stage 2...")
-                if task and task.wait then pcall(task.wait) end
+                if canYield then pcall(task.wait) end
                 s3Thread = nil
                 src = src
                     :gsub("=%(1/300%)", "=(1/100)")
                     :gsub("local (%w+)=(%w+)%[(%w+)%];", "local %1=(#%2==8886 and %2[8843])or %2[%3];", 1)
                     :gsub("((%w+)%[%((%w+)%+1%)%])=0%+%(%1%);", "%1=(%1==1e9 and 0)or(0+%1);")
                     :gsub("while%(([%w_]+%.[%w_]+)%)do ", "while(%1)do _AKY();", 1)
-            elseif not isStage2 and #src > 500000 and src:find("^return setmetatable%({") then
-                isStage3 = true
-                s3Done = false
-                s3Start = os.clock()
-                s3Thread = nil
-                setStatus("[4/6] Compiling Stage 3...")
-                if task and task.wait then
+            elseif not isStage2 and src:find("^return setmetatable%({") then
+                if not s3Loaded and #src > 2000000 then
+                    isStage3 = true
+                    s3Loaded = true
+                    s3Done = false
+                    s3Start = os.clock()
+                    s3Thread = nil
+                    setStatus("[4/6] Compiling Stage 3...")
+                else
+                    isSubVM = true
+                end
+                if canYield then
                     pcall(task.wait)
                 end
                 local b1, b2, bKey = src:find(",([%w_]+)=%[==%[")
                 local e1, e2 = src:find("]==],", b2 or 1, true)
                 if b1 and e1 and bKey then
-                    local blob = src:sub(b2 + 1, e1 - 1)
-                    g._AKB = blob
-                    env._AKB = blob
-                    pcall(rawset, origEnv, "_AKB", blob)
-                    src = src:sub(1, b1 - 1) .. "," .. bKey .. "=_AKB," .. src:sub(e2 + 1)
-                    if task and task.wait then
+                    bVal = src:sub(b2 + 1, e1 - 1)
+                    if isStage3 then
+                        bVar = "_AKB"
+                    else
+                        subBlobIdx = (subBlobIdx % 4) + 1
+                        bVar = "_AKB_" .. tostring(subBlobIdx)
+                    end
+                    g[bVar] = bVal
+                    env[bVar] = bVal
+                    pcall(rawset, origEnv, bVar, bVal)
+                    src = src:sub(1, b1 - 1) .. "," .. bKey .. "=" .. bVar .. "," .. src:sub(e2 + 1)
+                    if canYield then
                         pcall(task.wait)
                     end
                 end
+                if isStage3 then
+                    src = src
+                        :gsub("^return setmetatable", "_AKS();local _AKR=setmetatable", 1)
+                        :gsub(":([%w_]+)%(%)%(%.%.%.%)%s*$", ":%1()(...);_AKD();return _AKR", 1)
+                end
                 src = src
-                    :gsub("^return setmetatable", "_AKS();local _AKR=setmetatable", 1)
-                    :gsub(":([%w_]+)%(%)%(%.%.%.%)%s*$", ":%1()(...);_AKD();return _AKR", 1)
-                    :gsub("for o=1,#z,5 do ", "for o=1,#z,5 do if o%%200==1 then _AKY()end;", 1)
+                    :gsub("for (%w+)=1,#(%w+),5 do ", "for %1=1,#%2,5 do if %1%%200==1 then _AKY()end;", 1)
                     :gsub("while (%w+)%+39<=(%w+) do local ", "while %1+39<=%2 do if %1%%4000==1 then _AKY()end;local ", 1)
-                    :gsub("while (%w+) do if %1<=(%d+)", "while %1 do _AKY();if %1<=%2")
+                    :gsub("while (%w+) do if %1<=([%w_]+)", "while %1 do _AKY();if %1<=%2")
+                    :gsub("while true do if (%w+<=%d+) then ", "while true do _AKY();if %1 then ")
                     :gsub("while (%w+)%[(%d+)%]do (%w+)%[(%d+)%]%((%w+),(%w+),%.%.%.%)end;", "while %1[%2]do _AKY();%3[%4](%5,%6,...)end;")
                     :gsub("else U%[90%]=U%[45%]U%[0%]=14386203;end;", "else _AKY();U[90]=U[45]U[0]=14386203;end;", 1)
                     :gsub(
@@ -739,14 +784,14 @@ do
                         "elseif h==58 then K[W[U]]=K[z[U]]+(_AKP[K[o[U]]]or K[o[U]])U+=1;",
                         1
                     )
-                if task and task.wait then
+                if canYield then
                     pcall(task.wait)
                 end
             end
         end
 
         local fn, err
-        if type(src) == "string" and (isStage2 or isStage3 or not s3Done) then
+        if type(src) == "string" and (isStage2 or isStage3 or isSubVM or not s3Done) then
             fn, err = oldLs(selfBindPrefix .. src, name)
             if not fn then
                 fn, err = oldLs(src, name)
@@ -762,7 +807,7 @@ do
 
         if isStage3 then
             setStatus("[5/6] Running VM...")
-            if task and task.wait then
+            if canYield then
                 pcall(task.wait)
             end
             if task and task.delay then
@@ -774,7 +819,7 @@ do
             lastY = 0
         end
 
-        if fn and (isStage2 or isStage3 or not s3Done) then
+        if fn and (isStage2 or isStage3 or isSubVM or not s3Done) then
             if not pcall(setfenv, fn, env) then
                 local rawFn = fn
                 fn = function(...) return rawFn(...) end
@@ -783,7 +828,8 @@ do
             local okF, fenv = pcall(getfenv, fn)
             if okF and type(fenv) == "table" then
                 pcall(rawset, fenv, "debug", targetDbg)
-                pcall(rawset, fenv, "loadstring", g.loadstring)
+                pcall(rawset, fenv, "loadstring", akLoadstring)
+                pcall(rawset, fenv, "load", akLoadstring)
                 pcall(rawset, fenv, "getgenv", getgenvFn)
                 pcall(rawset, fenv, "ypcall", g.ypcall)
                 pcall(rawset, fenv, "_AKP", _AKP)
@@ -791,13 +837,20 @@ do
                 pcall(rawset, fenv, "_AKY", _AKY)
                 pcall(rawset, fenv, "_AKD", _AKD)
                 pcall(rawset, fenv, "_AKB", g._AKB)
+                if bVar then
+                    pcall(rawset, fenv, bVar, bVal)
+                end
+            end
+            if isSubVM and canYield then
+                pcall(task.wait)
             end
         end
         return fn, err
     end
 
-    env.loadstring = g.loadstring
-    env.load = g.loadstring
+    g.loadstring = akLoadstring
+    env.loadstring = akLoadstring
+    env.load = akLoadstring
     setmetatable(env, {
         __index = function(_, k)
             local v = g[k]
@@ -824,7 +877,7 @@ do
         rawset(origEnv, "debug", targetDbg)
         rawset(origEnv, "iscclosure", g.iscclosure)
         rawset(origEnv, "ypcall", g.ypcall)
-        rawset(origEnv, "loadstring", g.loadstring)
+        rawset(origEnv, "loadstring", akLoadstring)
         rawset(origEnv, "_AKEnv", env)
         rawset(origEnv, "_AKP", _AKP)
         rawset(origEnv, "_AKS", _AKS)
@@ -836,7 +889,7 @@ do
     if task and task.wait then pcall(task.wait) end
     local okRun, runErr = pcall(function()
         local s1Src = game:HttpGet("https://absent.wtf/AKADMIN.lua")
-        local s1Fn, s1Err = g.loadstring(s1Src)
+        local s1Fn, s1Err = akLoadstring(s1Src)
         if not s1Fn then
             error("S1 Compile: " .. tostring(s1Err))
         end
