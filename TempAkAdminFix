@@ -73,11 +73,14 @@ do
         end
         local raw = 0
         if uiCount > 0 then
-            local expected = 3850 + (#Players:GetPlayers() * 14)
+            local expected = 3550
             if uiCount >= expected then
-                expected = uiCount + 80
+                expected = uiCount + 35
             end
             raw = 14 + math.clamp(uiCount / expected, 0, 0.99) * 85
+            if uiPhase == "Macros" and raw < 97 then
+                raw = 97
+            end
         elseif authLatched then
             raw = math.clamp(4 + (yieldTotal - latchYield) * 0.6, 4, 14)
         end
@@ -187,7 +190,7 @@ do
             if targetPct >= 100 then
                 visPct = 100
             else
-                visPct = visPct + (targetPct - visPct) * math.clamp((dt or 0.016) * 10, 0.05, 1)
+                visPct = visPct + (targetPct - visPct) * math.clamp((dt or 0.016) * 20, 0.12, 1)
                 if visPct > targetPct then visPct = targetPct end
             end
 
@@ -221,7 +224,7 @@ do
 
     local function updatePill(dt)
         local now = os.clock()
-        if not hasError and (now - lastUiCheck > 0.12) then
+        if not hasError and (now - lastUiCheck > 0.05) then
             lastUiCheck = now
             pcall(function()
                 local ui = findGui("AKAdmin2")
