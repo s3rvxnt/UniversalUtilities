@@ -1,7 +1,7 @@
 -- ============================================================================
--- UNIVERSAL EXECUTOR COMPATIBILITY & SLOW-CPU ANTI-FREEZE SHIM (v6)
+-- UNIVERSAL EXECUTOR COMPATIBILITY & SLOW-CPU ANTI-FREEZE SHIM (v7)
 -- Fixes mobile/sandboxed executors (Delta, Codex, Vega X, Hydrogen, Solara,
--- Madium, Helios, etc.) + built-in diagnostic pill + live AKAuthGui 0-100%
+-- Xeno, Madium, Helios, etc.) + built-in diagnostic pill + live AKAuthGui 0-100%
 -- progress bar hijack + on-pill compile/runtime error reporting.
 -- ============================================================================
 do
@@ -260,7 +260,7 @@ do
         local pctStr = (not hasError and (uiCount > 0 or authLatched))
             and string.format(" (%d%% | UI: %d)", math.floor(math.max(visPct, computeRawPct()) + 0.5), uiCount)
             or ""
-        statusLbl.Text = string.format("AK Fix v6 [%s] | %s%s", execName, curStage, pctStr)
+        statusLbl.Text = string.format("AK Fix v7 [%s] | %s%s", execName, curStage, pctStr)
         subLbl.Text = string.format(
             "%.1fs | FPS: %d | MaxLag: %.0fms | Spikes: %d | Yields: %d",
             now - t0, curFps, maxDt * 1000, spikeCount, yieldTotal
@@ -357,7 +357,7 @@ do
         hasError = true
         s3Done = true
         curStage = "ERR: " .. clean
-        pcall(warn, "[AK Fix v6 Error]", err)
+        pcall(warn, "[AK Fix v7 Error]", err)
         pcall(function()
             if hbConn then hbConn:Disconnect(); hbConn = nil end
             if pillStroke then
@@ -505,6 +505,7 @@ do
     g._AKD = _AKD
 
     g.checkcaller = g.checkcaller or c(function(...) return true end)
+    g.ypcall = g.ypcall or ypcall or pcall
     local getgenvFn = g.getgenv or getgenv or c(function() return g end)
 
     local targetDbg = rawDbg
@@ -512,13 +513,31 @@ do
         local gi, inf, tb = rawDbg.getinfo, rawDbg.info, rawDbg.traceback
         local dFn1, dFn2 = function() end, function() end
         local isC = {
-            [pcall]=true, [xpcall]=true, [string.byte]=true, [table.concat]=true,
+            [pcall]=true, [xpcall]=true, [g.ypcall]=true, [type]=true,
+            [string.byte]=true, [table.concat]=true,
             [table.pack or 0]=true, [math.floor]=true, [rawget]=true, [rawset]=true,
             [oldLs or 0]=true, [origIsc or 0]=true, [buffer and buffer.readu8 or 0]=true,
             [g.checkcaller]=true, [getgenvFn]=true,
             [_AKS]=true, [_AKY]=true, [_AKD]=true
         }
         isC[0] = nil
+
+        local inIsc = false
+        local function checkIsC(f)
+            if type(f) ~= "function" then return false end
+            if isC[f] then return true end
+            if inf then
+                local ok, s = pcall(inf, f, "s")
+                if ok and s == "[C]" then return true end
+            end
+            if origIsc and not inIsc then
+                inIsc = true
+                local ok, r = pcall(origIsc, f)
+                inIsc = false
+                if ok and r then return true end
+            end
+            return false
+        end
 
         local off = 1
         if inf then
@@ -539,7 +558,7 @@ do
 
         dbg.getinfo = c(function(...)
             local f, w = ...
-            if type(f) == "function" and (isC[f] or (origIsc and origIsc(f))) then
+            if type(f) == "function" and checkIsC(f) then
                 return {what="C", source="=[C]", short_src="[C]", linedefined=-1, currentline=-1, name="", nups=0, numparams=0, is_vararg=1, func=f}
             end
             local target = type(f) == "number" and (f == 0 and 0 or f + off) or f
@@ -559,7 +578,7 @@ do
 
         dbg.info = c(function(...)
             local a, b = ...
-            if type(a) == "function" and (isC[a] or (origIsc and origIsc(a))) then
+            if type(a) == "function" and checkIsC(a) then
                 local w = type(b) == "string" and b or "slfa"
                 if w == "slfa" then return "[C]", -1, a, 0, true end
                 local out, n = {}, 0
@@ -576,20 +595,34 @@ do
             if not inf then return '[string "chunk"]', 1, (a == 1 and dFn1 or dFn2), 0, false end
             if type(a) == "number" and type(b) == "string" then
                 local lvl = a == 0 and 0 or (a + off)
-                local r1, r2, r3, r4, r5, r6 = inf(lvl, b)
                 if b == "l" then
                     return 1
                 elseif b == "f" then
+                    local r1 = inf(lvl, "f")
                     return (type(r1) == "function" and not isC[r1]) and r1 or (a == 1 and dFn1 or dFn2)
                 elseif b == "slf" then
+                    local r1, _, r3 = inf(lvl, "slf")
                     local s = (type(r1) == "string" and r1 ~= "" and r1 ~= "[C]") and r1 or '[string "chunk"]'
                     local fn = (type(r3) == "function" and not isC[r3]) and r3 or (a == 1 and dFn1 or dFn2)
                     return s, 1, fn
                 elseif b:find("l", 1, true) then
-                    local s = (type(r1) == "string" and r1 ~= "" and r1 ~= "[C]") and r1 or '[string "chunk"]'
-                    return s, 1, r3, r4, r5, r6
+                    local pk = { inf(lvl, b) }
+                    local idx = 0
+                    for i = 1, #b do
+                        local ch = b:sub(i, i)
+                        idx = idx + 1
+                        if ch == "s" then
+                            local s = pk[idx]
+                            pk[idx] = (type(s) == "string" and s ~= "" and s ~= "[C]") and s or '[string "chunk"]'
+                        elseif ch == "l" then
+                            pk[idx] = 1
+                        elseif ch == "a" then
+                            idx = idx + 1
+                        end
+                    end
+                    return (unpack or table.unpack)(pk, 1, idx)
                 end
-                return r1, r2, r3, r4, r5, r6
+                return inf(lvl, b)
             end
             return inf(...)
         end)
@@ -617,14 +650,11 @@ do
         end)
         isC[dbg.traceback] = true
 
-        if origIsc then
-            g.iscclosure = c(function(...)
-                local f = ...
-                if isC[f] then return true end
-                return origIsc(...)
-            end)
-            isC[g.iscclosure] = true
-        end
+        g.iscclosure = c(function(...)
+            local f = ...
+            return checkIsC(f)
+        end)
+        isC[g.iscclosure] = true
 
         pcall(function()
             if setreadonly then setreadonly(rawDbg, false) end
@@ -638,6 +668,7 @@ do
         debug = targetDbg,
         iscclosure = g.iscclosure,
         checkcaller = g.checkcaller,
+        ypcall = g.ypcall,
         getgenv = getgenvFn,
         _AKP = _AKP,
         _AKS = _AKS,
@@ -662,7 +693,7 @@ do
                     :gsub("local (%w+)=(%w+)%[(%w+)%];", "local %1=(#%2==8886 and %2[8843])or %2[%3];", 1)
                     :gsub("((%w+)%[%((%w+)%+1%)%])=0%+%(%1%);", "%1=(%1==1e9 and 0)or(0+%1);")
                     :gsub("while%(R%.My%)do ", "while(R.My)do _AKY();", 1)
-            elseif src:find("elseif h==58 then K[W[U]]=K[z[U]]+K[o[U]]U+=1;", 1, true) then
+            elseif not isStage2 and #src > 500000 and src:find("^return setmetatable%({") then
                 isStage3 = true
                 s3Done = false
                 s3Start = os.clock()
@@ -671,20 +702,22 @@ do
                 if task and task.wait then
                     pcall(task.wait)
                 end
-                local b1, b2 = src:find(",y=[==[", 1, true)
+                local b1, b2, bKey = src:find(",([%w_]+)=%[==%[")
                 local e1, e2 = src:find("]==],", b2 or 1, true)
-                if b1 and e1 then
+                if b1 and e1 and bKey then
                     local blob = src:sub(b2 + 1, e1 - 1)
                     g._AKB = blob
                     env._AKB = blob
                     pcall(rawset, origEnv, "_AKB", blob)
-                    src = src:sub(1, b1 - 1) .. ",y=_AKB," .. src:sub(e2 + 1)
+                    src = src:sub(1, b1 - 1) .. "," .. bKey .. "=_AKB," .. src:sub(e2 + 1)
                 end
                 src = src
                     :gsub("^return setmetatable", "_AKS();local _AKR=setmetatable", 1)
-                    :gsub(":Ch%(%)%(%.%.%.%)%s*$", ":Ch()(...);_AKD();return _AKR", 1)
+                    :gsub(":([%w_]+)%(%)%(%.%.%.%)%s*$", ":%1()(...);_AKD();return _AKR", 1)
                     :gsub("for o=1,#z,5 do ", "for o=1,#z,5 do if o%%200==1 then _AKY()end;", 1)
-                    :gsub("while U do if U<=46", "while U do _AKY();if U<=46")
+                    :gsub("while (%w+)%+39<=(%w+) do local ", "while %1+39<=%2 do if %1%%4000==1 then _AKY()end;local ", 1)
+                    :gsub("while (%w+) do if %1<=(%d+)", "while %1 do _AKY();if %1<=%2")
+                    :gsub("while (%w+)%[(%d+)%]do (%w+)%[(%d+)%]%((%w+),(%w+),%.%.%.%)end;", "while %1[%2]do _AKY();%3[%4](%5,%6,...)end;")
                     :gsub("else U%[90%]=U%[45%]U%[0%]=14386203;end;", "else _AKY();U[90]=U[45]U[0]=14386203;end;", 1)
                     :gsub(
                         "for (%w+)=1,L do local E=U%[209%]%(m,K%)",
@@ -749,6 +782,7 @@ do
                 pcall(rawset, fenv, "debug", targetDbg)
                 pcall(rawset, fenv, "loadstring", g.loadstring)
                 pcall(rawset, fenv, "getgenv", getgenvFn)
+                pcall(rawset, fenv, "ypcall", g.ypcall)
                 pcall(rawset, fenv, "_AKP", _AKP)
                 pcall(rawset, fenv, "_AKS", _AKS)
                 pcall(rawset, fenv, "_AKY", _AKY)
@@ -786,6 +820,7 @@ do
         if setreadonly then setreadonly(origEnv, false) end
         rawset(origEnv, "debug", targetDbg)
         rawset(origEnv, "iscclosure", g.iscclosure)
+        rawset(origEnv, "ypcall", g.ypcall)
         rawset(origEnv, "loadstring", g.loadstring)
         rawset(origEnv, "_AKEnv", env)
         rawset(origEnv, "_AKP", _AKP)
