@@ -51,14 +51,30 @@ do
     local curFps = 60
     local spikeCount = 0
     local yieldTotal = 0
+    local yCount = 0
     local uiCount = 0
     local uiPhase = ""
+    local lastUiNode = "-"
+    local akKeyCount = 0
+    local lastAkKey = "-"
+    local seenAkKeys = {}
+    local akConnCount = 0
+    local lastCheckpoint = "InitShim"
     local lastUiCheck = 0
     local curStage = "[1/6] Init"
     local hasError = false
 
+    local function fmtCount(n)
+        if n >= 1000000 then
+            return string.format("%.2fM", n / 1000000)
+        elseif n >= 1000 then
+            return string.format("%.1fk", n / 1000)
+        end
+        return tostring(n)
+    end
+
     -- AKAuthGui hijack state
-    local authGui, authCard, authStatusLbl, authPctLbl, authDbgLbl, authFill
+    local authGui, authCard, authStatusLbl, authPctLbl, authDbgLbl, authDbgLbl2, authFill
     local authLatched = false
     local authBaseText = "Loading AK ADMIN"
     local latchYield = 0
@@ -108,10 +124,10 @@ do
         local track, lbl
         for _, ch in ipairs(card:GetChildren()) do
             if ch:IsA("Frame") and ch.Size.Y.Offset >= 2 and ch.Size.Y.Offset <= 6
-                and ch.Position.Y.Offset >= 90 and ch.Position.Y.Offset <= 120 then
+                and ch.Position.Y.Offset >= 85 and ch.Position.Y.Offset <= 120 then
                 track = ch
-            elseif ch:IsA("TextLabel") and ch.Name ~= "_AKPct" and ch.Name ~= "_AKDbg"
-                and ch.Position.Y.Offset >= 65 and ch.Position.Y.Offset <= 106 then
+            elseif ch:IsA("TextLabel") and ch.Name ~= "_AKPct" and ch.Name ~= "_AKDbg" and ch.Name ~= "_AKDbg2"
+                and ch.Position.Y.Offset >= 60 and ch.Position.Y.Offset <= 106 then
                 lbl = ch
             end
         end
@@ -129,14 +145,24 @@ do
                 lbl.Position.X.Scale,
                 lbl.Position.X.Offset,
                 lbl.Position.Y.Scale,
-                lbl.Position.Y.Offset - 5
+                lbl.Position.Y.Offset - 9
             )
             track.Position = UDim2.new(
                 track.Position.X.Scale,
                 track.Position.X.Offset,
                 track.Position.Y.Scale,
-                track.Position.Y.Offset - 5
+                track.Position.Y.Offset - 9
             )
+            for _, ch in ipairs(card:GetChildren()) do
+                if ch ~= lbl and ch ~= track and ch:IsA("GuiObject") and ch.Position.Y.Offset >= 115 and ch.Position.Y.Offset <= 135 then
+                    ch.Position = UDim2.new(
+                        ch.Position.X.Scale,
+                        ch.Position.X.Offset,
+                        ch.Position.Y.Scale,
+                        ch.Position.Y.Offset + 6
+                    )
+                end
+            end
         end
 
         authDbgLbl = card:FindFirstChild("_AKDbg")
@@ -145,34 +171,68 @@ do
             authDbgLbl.Name = "_AKDbg"
             authDbgLbl.BackgroundTransparency = 1
             authDbgLbl.Font = Enum.Font.Code
-            authDbgLbl.TextSize = 11
-            authDbgLbl.TextScaled = true
+            authDbgLbl.TextSize = 8
+            authDbgLbl.TextScaled = false
+            authDbgLbl.TextWrapped = false
+            authDbgLbl.TextTruncate = Enum.TextTruncate.AtEnd
             authDbgLbl.TextXAlignment = Enum.TextXAlignment.Left
             authDbgLbl.TextYAlignment = Enum.TextYAlignment.Center
             authDbgLbl.Position = UDim2.new(
                 0,
                 track.Position.X.Offset,
                 0,
-                track.Position.Y.Offset + track.Size.Y.Offset + 4
+                track.Position.Y.Offset + track.Size.Y.Offset + 3
             )
             authDbgLbl.Size = UDim2.new(
                 1,
                 -(track.Position.X.Offset * 2),
                 0,
-                13
+                11
             )
-            local tc = Instance.new("UITextSizeConstraint")
-            tc.MaxTextSize = 11
-            tc.MinTextSize = 8
-            tc.Parent = authDbgLbl
             authDbgLbl.Parent = card
         end
+
+        authDbgLbl2 = card:FindFirstChild("_AKDbg2")
+        if not authDbgLbl2 then
+            authDbgLbl2 = Instance.new("TextLabel")
+            authDbgLbl2.Name = "_AKDbg2"
+            authDbgLbl2.BackgroundTransparency = 1
+            authDbgLbl2.Font = Enum.Font.Code
+            authDbgLbl2.TextSize = 8
+            authDbgLbl2.TextScaled = false
+            authDbgLbl2.TextWrapped = false
+            authDbgLbl2.TextTruncate = Enum.TextTruncate.AtEnd
+            authDbgLbl2.TextXAlignment = Enum.TextXAlignment.Left
+            authDbgLbl2.TextYAlignment = Enum.TextYAlignment.Center
+            authDbgLbl2.Position = UDim2.new(
+                0,
+                track.Position.X.Offset,
+                0,
+                track.Position.Y.Offset + track.Size.Y.Offset + 15
+            )
+            authDbgLbl2.Size = UDim2.new(
+                1,
+                -(track.Position.X.Offset * 2),
+                0,
+                11
+            )
+            authDbgLbl2.Parent = card
+        end
+
+        local now = os.clock()
         authDbgLbl.TextTransparency = lbl.TextTransparency
         authDbgLbl.TextColor3 = (maxDt < 0.250) and Color3.fromRGB(130, 235, 170)
             or ((maxDt < 1.0) and Color3.fromRGB(255, 205, 90) or Color3.fromRGB(255, 105, 105))
         authDbgLbl.Text = string.format(
-            "AK Fix v8 [%s] | %.1fs | FPS: %d | MaxLag: %.0fms | Spikes: %d | Yields: %d | UI: %d",
-            execName, os.clock() - t0, curFps, maxDt * 1000, spikeCount, yieldTotal, uiCount
+            "AK Fix v8 [%s] | %.1fs | %d FPS | Lag:%.0fms(x%d) | Yld:%d | VM:%s",
+            execName, now - t0, curFps, maxDt * 1000, spikeCount, yieldTotal, fmtCount(yCount)
+        )
+
+        authDbgLbl2.TextTransparency = lbl.TextTransparency
+        authDbgLbl2.TextColor3 = Color3.fromRGB(150, 205, 255)
+        authDbgLbl2.Text = string.format(
+            "Chk:%s | AKUI:%d(%s) | Conns:%d | UI:%d(%s)",
+            lastCheckpoint, akKeyCount, lastAkKey, akConnCount, uiCount, lastUiNode
         )
 
         if not authLatched then
@@ -287,13 +347,36 @@ do
         if not hasError and (now - lastUiCheck > 0.05) then
             lastUiCheck = now
             pcall(function()
+                if type(g.AKUI) == "table" then
+                    local kc = 0
+                    for k, _ in pairs(g.AKUI) do
+                        kc = kc + 1
+                        if not seenAkKeys[k] and type(k) == "string" then
+                            seenAkKeys[k] = true
+                            lastAkKey = k
+                        end
+                    end
+                    akKeyCount = kc
+                    if type(g.AKUI.conns) == "table" then
+                        akConnCount = #g.AKUI.conns
+                    end
+                end
                 local ui = findGui("AKAdmin2")
                 if ui then
-                    uiCount = #ui:GetDescendants()
+                    lastCheckpoint = "S3-BuildUI"
+                    local desc = ui:GetDescendants()
+                    uiCount = #desc
                     local kids = ui:GetChildren()
                     local lastKid = kids[#kids]
+                    local leaf = desc[#desc]
                     if lastKid then
                         local kn = lastKid.Name
+                        local ln = (leaf and leaf ~= lastKid and leaf.Name or "")
+                        local nodeStr = (ln ~= "" and (kn .. ">" .. ln) or kn)
+                        if #nodeStr > 20 then
+                            nodeStr = nodeStr:sub(1, 20)
+                        end
+                        lastUiNode = nodeStr
                         if kn:find("^Rail") or kn == "InfoHolder" then
                             uiPhase = "Navigation"
                         elseif kn == "DynamicIsland" or kn == "IslandStats" then
@@ -313,6 +396,8 @@ do
                             end
                         end
                     end
+                elseif findGui("AKAuthGui") then
+                    lastCheckpoint = authLatched and "S3-PostAuth" or "S3-Auth"
                 end
             end)
         end
@@ -321,12 +406,12 @@ do
         end
         if not statusLbl or not subLbl then return end
         local pctStr = (not hasError and (uiCount > 0 or authLatched))
-            and string.format(" (%d%% | UI: %d)", math.floor(math.max(visPct, computeRawPct()) + 0.5), uiCount)
-            or ""
+            and string.format(" (%d%% | UI:%d | AKUI:%d)", math.floor(math.max(visPct, computeRawPct()) + 0.5), uiCount, akKeyCount)
+            or string.format(" (Chk:%s)", lastCheckpoint)
         statusLbl.Text = string.format("AK Fix v8 [%s] | %s%s", execName, curStage, pctStr)
         subLbl.Text = string.format(
-            "%.1fs | FPS: %d | MaxLag: %.0fms | Spikes: %d | Yields: %d",
-            now - t0, curFps, maxDt * 1000, spikeCount, yieldTotal
+            "%.1fs | %d FPS | Lag:%.0fms(x%d) | Yld:%d | VM:%s | Conns:%d",
+            now - t0, curFps, maxDt * 1000, spikeCount, yieldTotal, fmtCount(yCount), akConnCount
         )
         if not hasError then
             subLbl.TextColor3 = (maxDt < 0.250) and Color3.fromRGB(130, 235, 170)
@@ -411,7 +496,6 @@ do
     local s3Done = false
     local s3Loaded = false
     local s3Start = os.clock()
-    local yCount = 0
     local lastCheck = 0
     local burstStart = 0
     local subBlobIdx = 0
@@ -447,6 +531,7 @@ do
         end)
     end
 
+    lastCheckpoint = "CleanCache"
     setStatus("[1/6] Cleaning cache...")
     if task and task.wait then pcall(task.wait) end
 
@@ -785,6 +870,7 @@ do
         if type(src) == "string" then
             if src:find("DecompressBuffer", 1, true) then
                 isStage2 = true
+                lastCheckpoint = "S2-Patch"
                 setStatus("[3/6] Decompressing Stage 2...")
                 if canYield then pcall(task.wait) end
                 s3Thread = nil
@@ -793,6 +879,7 @@ do
                     :gsub("local (%w+)=(%w+)%[(%w+)%];", "local %1=(#%2==8886 and %2[8843])or %2[%3];", 1)
                     :gsub("((%w+)%[%((%w+)%+1%)%])=0%+%(%1%);", "%1=(%1==1e9 and 0)or(0+%1);")
                     :gsub("while%(([%w_]+%.[%w_]+)%)do ", "while(%1)do _AKY();", 1)
+                lastCheckpoint = "S2-Compile"
             elseif not isStage2 and src:find("^return setmetatable%({") then
                 if not s3Loaded and #src > 2000000 then
                     isStage3 = true
@@ -800,6 +887,7 @@ do
                     s3Done = false
                     s3Start = os.clock()
                     s3Thread = nil
+                    lastCheckpoint = "S3-ExtractBlob"
                     setStatus("[4/6] Compiling Stage 3...")
                 else
                     isSubVM = true
@@ -826,6 +914,7 @@ do
                     end
                 end
                 if isStage3 then
+                    lastCheckpoint = "S3-PatchLoops"
                     src = src
                         :gsub("^return setmetatable", "_AKS();local _AKR=setmetatable", 1)
                         :gsub(":([%w_]+)%(%)%(%.%.%.%)%s*$", ":%1()(...);_AKD();return _AKR", 1)
@@ -876,6 +965,7 @@ do
         end
 
         if isStage3 then
+            lastCheckpoint = "S3-VMInit"
             setStatus("[5/6] Running VM...")
             if canYield then
                 pcall(task.wait)
@@ -972,15 +1062,18 @@ do
         end
         _AKD()
     else
+        lastCheckpoint = "HttpGetS1"
         setStatus("[2/6] Fetching AKADMIN.lua...")
         if task and task.wait then pcall(task.wait) end
         task.spawn(function()
             local okRun, runErr = pcall(function()
                 local s1Src = game:HttpGet("https://absent.wtf/AKADMIN.lua")
+                lastCheckpoint = "CompileS1"
                 local s1Fn, s1Err = akLoadstring(s1Src)
                 if not s1Fn then
                     error("S1 Compile: " .. tostring(s1Err))
                 end
+                lastCheckpoint = "RunS1"
                 return s1Fn()
             end)
             if not okRun then
