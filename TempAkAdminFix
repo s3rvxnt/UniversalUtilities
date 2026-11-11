@@ -73,7 +73,7 @@ do
         end
         local raw = 0
         if uiCount > 0 then
-            local expected = 4430 + (#Players:GetPlayers() * 15)
+            local expected = 6500 + (#Players:GetPlayers() * 18)
             if uiCount >= expected then
                 expected = uiCount + 80
             end
@@ -692,7 +692,7 @@ do
                     :gsub("=%(1/300%)", "=(1/100)")
                     :gsub("local (%w+)=(%w+)%[(%w+)%];", "local %1=(#%2==8886 and %2[8843])or %2[%3];", 1)
                     :gsub("((%w+)%[%((%w+)%+1%)%])=0%+%(%1%);", "%1=(%1==1e9 and 0)or(0+%1);")
-                    :gsub("while%(R%.My%)do ", "while(R.My)do _AKY();", 1)
+                    :gsub("while%(([%w_]+%.[%w_]+)%)do ", "while(%1)do _AKY();", 1)
             elseif not isStage2 and #src > 500000 and src:find("^return setmetatable%({") then
                 isStage3 = true
                 s3Done = false
@@ -710,6 +710,9 @@ do
                     env._AKB = blob
                     pcall(rawset, origEnv, "_AKB", blob)
                     src = src:sub(1, b1 - 1) .. "," .. bKey .. "=_AKB," .. src:sub(e2 + 1)
+                    if task and task.wait then
+                        pcall(task.wait)
+                    end
                 end
                 src = src
                     :gsub("^return setmetatable", "_AKS();local _AKR=setmetatable", 1)
