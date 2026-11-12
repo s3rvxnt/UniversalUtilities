@@ -4507,18 +4507,111 @@ do
         genv._RbxUIWrappedReanimRun = wrappedRun
         return wrappedRun
     end
+    local function disableForeignVcConns()
+        pcall(function()
+            local gc = getconnections or genv.getconnections
+            if type(gc) ~= "function" then return end
+            local cf = clonefunction or genv.clonefunction
+            if type(cf) == "function" then
+                local okCf, clonedGc = pcall(cf, gc)
+                if okCf and type(clonedGc) == "function" then
+                    gc = clonedGc
+                end
+            end
+            local okVci, vci = pcall(game.GetService, game, "VoiceChatInternal")
+            if not okVci or not vci then return end
+            for _, sigName in ipairs({ "StateChanged", "LocalPlayerModerated" }) do
+                local okS, sig = pcall(function() return vci[sigName] end)
+                if okS and sig then
+                    local okC, list = pcall(gc, sig)
+                    if okC and type(list) == "table" then
+                        for _, conn in ipairs(list) do
+                            pcall(function()
+                                if conn.ForeignState or conn.Function == nil then
+                                    if conn.Disable then conn:Disable() end
+                                end
+                            end)
+                        end
+                    end
+                end
+            end
+        end)
+    end
+    local function ensureVcBtnOnScreen(ak)
+        pcall(function()
+            local vc = type(ak) == "table" and ak.vc or nil
+            local btn = type(vc) == "table" and vc.btn or nil
+            if btn and typeof(btn) == "Instance" and btn:IsA("GuiObject") then
+                if btn.AbsolutePosition.Y < 2 then
+                    if type(vc.dockFind) == "function" then
+                        pcall(vc.dockFind)
+                    end
+                    if type(vc.dockPos) == "function" then
+                        pcall(vc.dockPos)
+                    end
+                    if btn.AbsolutePosition.Y < 2 then
+                        local root = ak.root
+                        local rootY = (root and typeof(root) == "Instance" and root:IsA("GuiObject")) and root.AbsolutePosition.Y or 0
+                        local targetOffsetY = (rootY < 10) and math.max(26, 54 - rootY) or -26
+                        vc.iPos = UDim2.new(0.5, 0, 0, targetOffsetY)
+                        btn.Position = vc.iPos
+                    end
+                end
+            end
+        end)
+    end
     local function makeVcWrapper(ak, origVcFn, vcKey)
         if origVcFn == genv["_RbxUIWrapped_" .. vcKey] then return origVcFn end
         genv["_RbxUIOrig_" .. vcKey] = origVcFn
         local wrappedVcFn = function(...)
-            local th = coroutine and coroutine.running and coroutine.running() or nil
-            local vct = genv._RbxUIVcThreads
-            if th and type(vct) == "table" then
-                vct[th] = true
+            if vcKey == "vcRun" then
+                pcall(function()
+                    local vc = type(ak) == "table" and ak.vc or nil
+                    if not (type(vc) == "table" and vc.on) then
+                        local okVci, vci = pcall(game.GetService, game, "VoiceChatInternal")
+                        if okVci and vci and type(vci.IsPublishPaused) == "function" then
+                            local okP, isPaused = pcall(vci.IsPublishPaused, vci)
+                            if okP and isPaused == true then
+                                local w = genv._KernelOrigTaskWait or (task and task.wait)
+                                local lastTip = 0
+                                local waitStart = os.clock()
+                                while (os.clock() - waitStart) < 60 do
+                                    local okNow, pausedNow = pcall(vci.IsPublishPaused, vci)
+                                    if not okNow or pausedNow == false then
+                                        break
+                                    end
+                                    if (os.clock() - lastTip) >= 5 then
+                                        lastTip = os.clock()
+                                        if type(ak) == "table" and type(ak.island) == "function" then
+                                            pcall(ak.island, {
+                                                title = "Anti VC ban",
+                                                sub = "Unmute to continue the setup",
+                                                kind = "info",
+                                                duration = 5,
+                                            })
+                                        end
+                                    end
+                                    if type(w) == "function" then w(0.15) else break end
+                                end
+                            end
+                        end
+                    end
+                end)
             end
             local okCall, r1, r2, r3 = pcall(origVcFn, ...)
-            if th and type(vct) == "table" then
-                vct[th] = nil
+            if vcKey == "vcRun" then
+                disableForeignVcConns()
+                ensureVcBtnOnScreen(ak)
+                if task and task.delay then
+                    for _, dt in ipairs({ 0.5, 1.5, 3.0 }) do
+                        task.delay(dt, function()
+                            disableForeignVcConns()
+                            ensureVcBtnOnScreen(ak)
+                        end)
+                    end
+                end
+            elseif vcKey == "vcBuild" then
+                ensureVcBtnOnScreen(ak)
             end
             if not okCall then
                 error(r1, 2)
