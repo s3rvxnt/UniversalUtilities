@@ -1,6 +1,6 @@
 -- ============================================================================
--- AKPlus: UNIVERSAL EXECUTOR SHIM & DYNAMIC ANTI-FREEZE GOVERNOR (v8.3.1)
--- AKPlusBuild:831
+-- AKPlus: UNIVERSAL EXECUTOR SHIM & DYNAMIC ANTI-FREEZE GOVERNOR (v8.3.2)
+-- AKPlusBuild:832
 -- Fixes mobile/sandboxed/desktop executors (Delta, Codex, Vega X, Hydrogen,
 -- Solara, Xeno, Madium, Helios, Potassium, Volt, etc.) + OmniTaskManager-aware
 -- dynamic frame-budget & auto-stride governor + sub-command VM cache + English
@@ -9,25 +9,54 @@
 local _akForceReload = false
 do
     local _gGuard = (getgenv and getgenv()) or _G
-    local _forceReload = _gGuard._AKForceReload
-    _gGuard._AKForceReload = nil
+    local _legacyPfx = "_" .. "AK"
+    local _legacyForce = _gGuard[_legacyPfx .. "ForceReload"]
+    for _, _tbl in ipairs({ _gGuard, _G, shared, (getfenv and getfenv(0)) or nil }) do
+        if type(_tbl) == "table" then
+            local _mig = {}
+            for _k, _v in pairs(_tbl) do
+                if type(_k) == "string" and _k:sub(1, 3) == _legacyPfx then
+                    _mig[_k] = _v
+                end
+            end
+            for _k, _v in pairs(_mig) do
+                local _suf = _k:sub(4)
+                local _nk = "_RbxUI" .. _suf
+                if _gGuard[_nk] == nil
+                    and _suf ~= "Y"
+                    and _suf ~= "S"
+                    and _suf ~= "D"
+                    and _suf ~= "P"
+                    and _suf ~= "B"
+                    and _suf ~= "Env"
+                    and _suf ~= "PlusLoadingDM"
+                    and _suf ~= "PlusLoadingStart"
+                then
+                    _gGuard[_nk] = _v
+                end
+                _tbl[_k] = nil
+            end
+        end
+    end
+    local _forceReload = _gGuard._RbxUIForceReload or (_legacyForce == true)
+    _gGuard._RbxUIForceReload = nil
     _akForceReload = (_forceReload == true)
     if not _akForceReload
-        and _gGuard._AKPlusLoadingDM == game
-        and type(_gGuard._AKPlusLoadingStart) == "number"
-        and (os.clock() - _gGuard._AKPlusLoadingStart) < 45
+        and _gGuard._RbxUIPlusLoadingDM == game
+        and type(_gGuard._RbxUIPlusLoadingStart) == "number"
+        and (os.clock() - _gGuard._RbxUIPlusLoadingStart) < 45
     then
         return
     end
 end
 
 do
-    local AKPLUS_BUILD = 831
+    local AKPLUS_BUILD = 832
     local callerEnv = getfenv and getfenv(1) or nil
     local origEnv = getfenv and getfenv(0) or _G
     local g = (getgenv and getgenv()) or _G
-    g._AKPlusBuild = AKPLUS_BUILD
-    g._AKPlusServerBoot = tostring(game.PlaceId) .. ":" .. tostring(game.JobId)
+    g._RbxUIPlusBuild = AKPLUS_BUILD
+    g._RbxUIPlusServerBoot = tostring(game.PlaceId) .. ":" .. tostring(game.JobId)
 
     local CoreGui = game:GetService("CoreGui")
     local Players = game:GetService("Players")
@@ -65,11 +94,11 @@ do
     end
 
     if _akForceReload then
-        if type(g._AKReanimBoosterUnload) == "function" then
-            pcall(g._AKReanimBoosterUnload)
+        if type(g._RbxUIReanimBoosterUnload) == "function" then
+            pcall(g._RbxUIReanimBoosterUnload)
         end
-        if type(g._AKDestroyStatusPill) == "function" then
-            pcall(g._AKDestroyStatusPill)
+        if type(g._RbxUIDestroyStatusPill) == "function" then
+            pcall(g._RbxUIDestroyStatusPill)
         end
         for _, guiName in ipairs({ "AKAdmin2", "AKAuthGui" }) do
             local oldGui = findGui(guiName)
@@ -77,65 +106,65 @@ do
                 pcall(function() oldGui:Destroy() end)
             end
         end
-        g._AKSubCache = nil
-        g._AKSubCacheOrder = nil
-        g._AKSubCacheSeq = 0
-        g._AKSubCacheHits = 0
-        g._AKWrappedTrHook = nil
-        g._AKWrappedTrLive = nil
-        g._AKWrappedReanimRun = nil
-        g._AKWrappedReexecGo = nil
-        g._AKWrapped_vcRun = nil
-        g._AKWrapped_vcBuild = nil
-        g["_AKWrapped_!rj"] = nil
-        g["_AKWrapped_!rejoin"] = nil
-        g["_AKWrapped_!serverhop"] = nil
+        g._RbxUISubCache = nil
+        g._RbxUISubCacheOrder = nil
+        g._RbxUISubCacheSeq = 0
+        g._RbxUISubCacheHits = 0
+        g._RbxUIWrappedTrHook = nil
+        g._RbxUIWrappedTrLive = nil
+        g._RbxUIWrappedReanimRun = nil
+        g._RbxUIWrappedReexecGo = nil
+        g._RbxUIWrapped_vcRun = nil
+        g._RbxUIWrapped_vcBuild = nil
+        g["_RbxUIWrapped_!rj"] = nil
+        g["_RbxUIWrapped_!rejoin"] = nil
+        g["_RbxUIWrapped_!serverhop"] = nil
         wipeStaleAkGlobals()
     end
 
-    local isNewDataModel = (g._AKShimDataModel ~= nil and g._AKShimDataModel ~= game)
-        or (g._AKShimDataModel == nil and g._AKPlusDataModel ~= game)
+    local isNewDataModel = (g._RbxUIShimDataModel ~= nil and g._RbxUIShimDataModel ~= game)
+        or (g._RbxUIShimDataModel == nil and g._RbxUIPlusDataModel ~= game)
     if isNewDataModel then
-        g._AKShimDataModel = game
-        g._AKPlusDataModel = game
-        g._AKPlusTeleportArmed = false
-        g._AKForceTpRearmedDM = nil
-        g._AKPhaseARetryDM = nil
-        g._AKSubCache = nil
-        g._AKSubCacheOrder = nil
-        g._AKSubCacheSeq = 0
-        g._AKSubCacheHits = 0
-        g._AKWrappedTrHook = nil
-        g._AKWrappedTrLive = nil
-        g._AKWrappedReanimRun = nil
-        g._AKWrappedReexecGo = nil
-        g._AKWrapped_vcRun = nil
-        g._AKWrapped_vcBuild = nil
-        g["_AKWrapped_!rj"] = nil
-        g["_AKWrapped_!rejoin"] = nil
-        g["_AKWrapped_!serverhop"] = nil
+        g._RbxUIShimDataModel = game
+        g._RbxUIPlusDataModel = game
+        g._RbxUIPlusTeleportArmed = false
+        g._RbxUIForceTpRearmedDM = nil
+        g._RbxUIPhaseARetryDM = nil
+        g._RbxUISubCache = nil
+        g._RbxUISubCacheOrder = nil
+        g._RbxUISubCacheSeq = 0
+        g._RbxUISubCacheHits = 0
+        g._RbxUIWrappedTrHook = nil
+        g._RbxUIWrappedTrLive = nil
+        g._RbxUIWrappedReanimRun = nil
+        g._RbxUIWrappedReexecGo = nil
+        g._RbxUIWrapped_vcRun = nil
+        g._RbxUIWrapped_vcBuild = nil
+        g["_RbxUIWrapped_!rj"] = nil
+        g["_RbxUIWrapped_!rejoin"] = nil
+        g["_RbxUIWrapped_!serverhop"] = nil
         local existingFullUi = findGui("AKAdmin2")
         if not (existingFullUi and existingFullUi:FindFirstChild("!jump", true)) then
             wipeStaleAkGlobals()
         end
     else
-        g._AKShimDataModel = game
-        g._AKPlusDataModel = game
+        g._RbxUIShimDataModel = game
+        g._RbxUIPlusDataModel = game
         local existingFullUi = findGui("AKAdmin2")
         if not (existingFullUi and existingFullUi:FindFirstChild("!jump", true)) then
             wipeStaleAkGlobals()
         end
     end
 
-    g._AKPlusLoadingDM = game
-    g._AKPlusLoadingStart = os.clock()
+    g._RbxUIPlusLoadingDM = game
+    g._RbxUIPlusLoadingStart = os.clock()
 
-    local truePrims = (type(g._AKTruePrims) == "table" and g._AKTruePrims.dm == game) and g._AKTruePrims or nil
+    local truePrims = (type(g._RbxUITruePrims) == "table" and g._RbxUITruePrims.dm == game) and g._RbxUITruePrims or nil
 
-    local ourShims = g._AKOurShims
+    local ourShims = g._RbxUIOurShims
     if type(ourShims) ~= "table" then
         ourShims = setmetatable({}, { __mode = "k" })
-        g._AKOurShims = ourShims
+        g._RbxUIOurShims = ourShims
     end
     local function markOurShim(fn)
         if type(fn) == "function" then
@@ -144,8 +173,8 @@ do
         return fn
     end
 
-    local rawDbgEarly = (type(debug) == "table" and debug) or g._AKOrigDbg
-    local rawDbgInfoEarly = (type(g._AKOrigDbgInf) == "function" and not ourShims[g._AKOrigDbgInf] and g._AKOrigDbgInf)
+    local rawDbgEarly = (type(debug) == "table" and debug) or g._RbxUIOrigDbg
+    local rawDbgInfoEarly = (type(g._RbxUIOrigDbgInf) == "function" and not ourShims[g._RbxUIOrigDbgInf] and g._RbxUIOrigDbgInf)
         or (rawDbgEarly and type(rawDbgEarly.info) == "function" and not ourShims[rawDbgEarly.info] and rawDbgEarly.info)
         or nil
 
@@ -301,8 +330,8 @@ do
     end
 
     local rawNewcc = resolvePrimFn(
-        g._AKOrigNewcclosure,
-        g._AKLastShimNewcclosure,
+        g._RbxUIOrigNewcclosure,
+        g._RbxUILastShimNewcclosure,
         newcclosure,
         g.newcclosure,
         origEnv and rawget(origEnv, "newcclosure")
@@ -319,7 +348,7 @@ do
             local ok1, r1a, r1b = pcall(testWrapped, 11, 12)
             local ok2, r2a, r2b = pcall(testWrapped, 22, 23)
             if ok1 and r1a == 11 and r1b == 12 and ok2 and r2a == 22 and r2b == 23 and innerTh == callerTh then
-                g._AKOrigNewcclosure = rawNewcc
+                g._RbxUIOrigNewcclosure = rawNewcc
                 c = function(fn)
                     if type(fn) ~= "function" then return fn end
                     local okC, resC = pcall(rawNewcc, fn)
@@ -332,7 +361,7 @@ do
         end
     end
     if c == wrapLuaCClosure then
-        g._AKLastShimNewcclosure = wrapLuaCClosure
+        g._RbxUILastShimNewcclosure = wrapLuaCClosure
         pcall(function() g.newcclosure = wrapLuaCClosure end)
     end
 
@@ -359,8 +388,8 @@ do
     local xenoRawLs = (shared and type(shared.__Xeno) == "table" and type(shared.__Xeno.loadstring) == "function")
         and shared.__Xeno.loadstring or nil
     local oldLs = resolvePrimFn(
-        g._AKOrigLs,
-        g._AKLastShimLs,
+        g._RbxUIOrigLs,
+        g._RbxUILastShimLs,
         loadstring,
         g.loadstring,
         xenoRawLs,
@@ -371,7 +400,7 @@ do
         local peeledLs = peelUpvalueCFn(
             {
                 oldLs,
-                g._AKOrigLs,
+                g._RbxUIOrigLs,
                 loadstring,
                 g.loadstring,
                 xenoRawLs,
@@ -389,7 +418,7 @@ do
         else
             for _, candLs in ipairs({
                 truePrims and truePrims.ls or nil,
-                g._AKOrigLs,
+                g._RbxUIOrigLs,
                 xenoRawLs,
                 loadstring,
                 g.loadstring,
@@ -421,8 +450,8 @@ do
     end
 
     local origIsc = resolvePrimFn(
-        g._AKOrigIsc,
-        g._AKLastShimIsc,
+        g._RbxUIOrigIsc,
+        g._RbxUILastShimIsc,
         iscclosure,
         g.iscclosure,
         origEnv and rawget(origEnv, "iscclosure"),
@@ -430,7 +459,7 @@ do
     )
     if type(origIsc) == "function" and not isValidIscFn(origIsc) then
         local peeledIsc = peelUpvalueCFn(
-            { origIsc, g._AKOrigIsc, iscclosure, g.iscclosure },
+            { origIsc, g._RbxUIOrigIsc, iscclosure, g.iscclosure },
             isValidIscFn,
             function(nm) return nm:lower():find("isc", 1, true) ~= nil end
         )
@@ -442,12 +471,12 @@ do
             origIsc = nil
         end
     end
-    local rawDbg = (isNewDataModel and type(debug) == "table" and debug ~= g._AKLastShimDbg and debug)
+    local rawDbg = (isNewDataModel and type(debug) == "table" and debug ~= g._RbxUILastShimDbg and debug)
         or (type(debug) == "table" and debug)
-        or g._AKOrigDbg
-    g._AKOrigLs = oldLs
-    g._AKOrigIsc = origIsc
-    g._AKOrigDbg = rawDbg
+        or g._RbxUIOrigDbg
+    g._RbxUIOrigLs = oldLs
+    g._RbxUIOrigIsc = origIsc
+    g._RbxUIOrigDbg = rawDbg
 
     local voltTbl = (type(volt) == "table" and volt) or (type(g.volt) == "table" and g.volt) or nil
     local awpTbl = (type(awp) == "table" and awp) or (type(g.awp) == "table" and g.awp) or nil
@@ -456,8 +485,8 @@ do
     local krnlTbl = (type(krnl) == "table" and krnl) or (type(g.krnl) == "table" and g.krnl) or nil
 
     local rawSetFpsCap = resolvePrimFn(
-        g._AKOrigSetFpsCap,
-        g._AKLastShimSetFpsCap,
+        g._RbxUIOrigSetFpsCap,
+        g._RbxUILastShimSetFpsCap,
         setfpscap,
         set_fps_cap,
         g.setfpscap,
@@ -469,7 +498,7 @@ do
         truePrims and truePrims.setfps
     )
     local rawGetFpsCap = resolvePrimFn(
-        g._AKOrigGetFpsCap,
+        g._RbxUIOrigGetFpsCap,
         nil,
         getfpscap,
         get_fps_cap,
@@ -480,25 +509,25 @@ do
         origEnv and (rawget(origEnv, "getfpscap") or rawget(origEnv, "get_fps_cap")),
         truePrims and truePrims.getfps
     )
-    g._AKOrigSetFpsCap = rawSetFpsCap
-    g._AKOrigGetFpsCap = rawGetFpsCap
+    g._RbxUIOrigSetFpsCap = rawSetFpsCap
+    g._RbxUIOrigGetFpsCap = rawGetFpsCap
 
     local rawIdentifyExec = resolvePrimFn(
-        g._AKOrigIdentifyExec,
-        g._AKLastShimIdentifyExec,
+        g._RbxUIOrigIdentifyExec,
+        g._RbxUILastShimIdentifyExec,
         identifyexecutor,
         g.identifyexecutor,
         origEnv and rawget(origEnv, "identifyexecutor")
     )
     local rawGetExecName = resolvePrimFn(
-        g._AKOrigGetExecName,
-        g._AKLastShimGetExecName,
+        g._RbxUIOrigGetExecName,
+        g._RbxUILastShimGetExecName,
         getexecutorname,
         g.getexecutorname,
         origEnv and rawget(origEnv, "getexecutorname")
     )
-    g._AKOrigIdentifyExec = rawIdentifyExec
-    g._AKOrigGetExecName = rawGetExecName
+    g._RbxUIOrigIdentifyExec = rawIdentifyExec
+    g._RbxUIOrigGetExecName = rawGetExecName
 
     local execName = "Unknown"
     pcall(function()
@@ -520,8 +549,8 @@ do
         return "Potassium"
     end) or nil
     if needExecSpoof then
-        g._AKLastShimIdentifyExec = spoofIdentifyExec
-        g._AKLastShimGetExecName = spoofGetExecName
+        g._RbxUILastShimIdentifyExec = spoofIdentifyExec
+        g._RbxUILastShimGetExecName = spoofGetExecName
     end
     if type(rawSetFpsCap) == "function" then
         safeSetFpsCap = c(function(cap)
@@ -548,7 +577,7 @@ do
             local okN, resN = pcall(rawSetFpsCap, n or cap)
             return okN and resN or nil
         end)
-        g._AKLastShimSetFpsCap = safeSetFpsCap
+        g._RbxUILastShimSetFpsCap = safeSetFpsCap
         pcall(function() g.setfpscap = safeSetFpsCap end)
         if isXenoExec then
             pcall(function()
@@ -581,8 +610,8 @@ do
     local lastStrideClock = t0
 
     pcall(function()
-        if type(g._AKFocusConns) == "table" then
-            for _, cn in ipairs(g._AKFocusConns) do
+        if type(g._RbxUIFocusConns) == "table" then
+            for _, cn in ipairs(g._RbxUIFocusConns) do
                 pcall(function() cn:Disconnect() end)
             end
         end
@@ -598,7 +627,7 @@ do
         local c3 = RunService.Heartbeat:Connect(function()
             curFrameId = curFrameId + 1
         end)
-        g._AKFocusConns = { c1, c2, c3 }
+        g._RbxUIFocusConns = { c1, c2, c3 }
     end)
 
     local function fastWait()
@@ -723,8 +752,8 @@ do
         if not d or not d:IsA("TextLabel") then return end
         d.Visible = false
         d.TextTransparency = 1
-        if not d:GetAttribute("_AKSuppressed") then
-            d:SetAttribute("_AKSuppressed", true)
+        if not d:GetAttribute("_RbxUISuppressed") then
+            d:SetAttribute("_RbxUISuppressed", true)
             pcall(function()
                 d:GetPropertyChangedSignal("Visible"):Connect(function()
                     if d.Visible then d.Visible = false end
@@ -786,7 +815,7 @@ do
             if statusFrame and not hasError then
                 statusFrame.Visible = false
             end
-            for _, nm in ipairs({ "_AKPct", "_AKDbg", "_AKDbg2" }) do
+            for _, nm in ipairs({ "_RbxUIPct", "_RbxUIDbg", "_RbxUIDbg2" }) do
                 local ov = card:FindFirstChild(nm)
                 if ov and (ov:IsA("TextLabel") or ov:IsA("GuiObject")) then
                     ov.Visible = false
@@ -854,8 +883,8 @@ do
         if not lbl then
             local bestScore = 1e9
             for _, d in ipairs(card:GetDescendants()) do
-                if d:IsA("TextLabel") and d.Name ~= "_AKPct" and d.Name ~= "_AKDbg" and d.Name ~= "_AKDbg2"
-                    and not d:GetAttribute("_AKSuppressed") and not hasHiddenAncestor(d, card)
+                if d:IsA("TextLabel") and d.Name ~= "_RbxUIPct" and d.Name ~= "_RbxUIDbg" and d.Name ~= "_RbxUIDbg2"
+                    and not d:GetAttribute("_RbxUISuppressed") and not hasHiddenAncestor(d, card)
                     and not (footerFrame and (d == footerFrame or d:IsDescendantOf(footerFrame))) then
                     local ry = hasAbs and (d.AbsolutePosition.Y - cardTop) or d.Position.Y.Offset
                     local rx = hasAbs and (d.AbsolutePosition.X - cardLeft) or (d.Position.X.Scale * cardW + d.Position.X.Offset)
@@ -878,7 +907,7 @@ do
 
         -- Suppress duplicate upstream right-side % labels and upstream telemetry labels below the progress bar
         for _, d in ipairs(card:GetDescendants()) do
-            if d:IsA("TextLabel") and d ~= lbl and d.Name ~= "_AKPct" and d.Name ~= "_AKDbg" and d.Name ~= "_AKDbg2"
+            if d:IsA("TextLabel") and d ~= lbl and d.Name ~= "_RbxUIPct" and d.Name ~= "_RbxUIDbg" and d.Name ~= "_RbxUIDbg2"
                 and not hasHiddenAncestor(d, card)
                 and not (footerFrame and (d == footerFrame or d:IsDescendantOf(footerFrame))) then
                 local ry = hasAbs and (d.AbsolutePosition.Y - cardTop) or d.Position.Y.Offset
@@ -899,8 +928,8 @@ do
 
         local padX = math.clamp((track.Position.X.Offset > 0 and track.Position.X.Offset) or 22, 16, 28)
 
-        if not card:GetAttribute("_AKNudged") then
-            card:SetAttribute("_AKNudged", true)
+        if not card:GetAttribute("_RbxUINudged") then
+            card:SetAttribute("_RbxUINudged", true)
             if lbl.Parent == card then
                 local origLblY = lbl.Position.Y.Offset
                 lbl.Position = UDim2.new(
@@ -964,7 +993,7 @@ do
                 if shiftDown > 0 then
                     for _, ch in ipairs(card:GetChildren()) do
                         if ch ~= lbl and ch ~= lbl.Parent and ch ~= track
-                            and ch.Name ~= "_AKPct" and ch.Name ~= "_AKDbg" and ch.Name ~= "_AKDbg2"
+                            and ch.Name ~= "_RbxUIPct" and ch.Name ~= "_RbxUIDbg" and ch.Name ~= "_RbxUIDbg2"
                             and ch:IsA("GuiObject") and ch.Visible and ch.Position.Y.Scale == 0
                             and ch.Position.Y.Offset >= (origDivY - 2) then
                             ch.Position = UDim2.new(
@@ -1016,10 +1045,10 @@ do
             end
         end
 
-        authDbgLbl = card:FindFirstChild("_AKDbg")
+        authDbgLbl = card:FindFirstChild("_RbxUIDbg")
         if not authDbgLbl then
             authDbgLbl = Instance.new("TextLabel")
-            authDbgLbl.Name = "_AKDbg"
+            authDbgLbl.Name = "_RbxUIDbg"
             authDbgLbl.BackgroundTransparency = 1
             authDbgLbl.Font = Enum.Font.Code
             authDbgLbl.TextSize = 8
@@ -1036,10 +1065,10 @@ do
         authDbgLbl.Position = UDim2.new(0, padX, track.Position.Y.Scale, trackBottomOffset + 4)
         authDbgLbl.Size = UDim2.new(1, -(padX * 2), 0, 11)
 
-        authDbgLbl2 = card:FindFirstChild("_AKDbg2")
+        authDbgLbl2 = card:FindFirstChild("_RbxUIDbg2")
         if not authDbgLbl2 then
             authDbgLbl2 = Instance.new("TextLabel")
-            authDbgLbl2.Name = "_AKDbg2"
+            authDbgLbl2.Name = "_RbxUIDbg2"
             authDbgLbl2.BackgroundTransparency = 1
             authDbgLbl2.Font = Enum.Font.Code
             authDbgLbl2.TextSize = 8
@@ -1146,10 +1175,10 @@ do
                 end
 
                 local pctRef = (authStatusLbl.Parent == card) and authStatusLbl or authStatusLbl.Parent
-                authPctLbl = card:FindFirstChild("_AKPct")
+                authPctLbl = card:FindFirstChild("_RbxUIPct")
                 if not authPctLbl then
                     authPctLbl = Instance.new("TextLabel")
-                    authPctLbl.Name = "_AKPct"
+                    authPctLbl.Name = "_RbxUIPct"
                     authPctLbl.BackgroundTransparency = 1
                     authPctLbl.Font = authStatusLbl.Font
                     authPctLbl.TextSize = authStatusLbl.TextSize
@@ -1232,8 +1261,8 @@ do
 
     local function patchAkTranslator(ak)
         if type(ak) ~= "table" then return end
-        if type(ak.trHook) == "function" and ak.trHook ~= g._AKWrappedTrHook then
-            g._AKOrigTrHook = ak.trHook
+        if type(ak.trHook) == "function" and ak.trHook ~= g._RbxUIWrappedTrHook then
+            g._RbxUIOrigTrHook = ak.trHook
             local orig = ak.trHook
             local wrapped = function(inst, ...)
                 local lang = (type(ak.prefs) == "table" and ak.prefs.lang) or "en"
@@ -1244,11 +1273,11 @@ do
                 if not ak.trLibOn then ak.trLibOn = true end
                 return orig(inst, ...)
             end
-            g._AKWrappedTrHook = wrapped
+            g._RbxUIWrappedTrHook = wrapped
             ak.trHook = wrapped
         end
-        if type(ak.trLiveCand) == "function" and ak.trLiveCand ~= g._AKWrappedTrLive then
-            g._AKOrigTrLive = ak.trLiveCand
+        if type(ak.trLiveCand) == "function" and ak.trLiveCand ~= g._RbxUIWrappedTrLive then
+            g._RbxUIOrigTrLive = ak.trLiveCand
             local orig = ak.trLiveCand
             local emptyTbl = {}
             local wrapped = function(...)
@@ -1258,7 +1287,7 @@ do
                 end
                 return orig(...)
             end
-            g._AKWrappedTrLive = wrapped
+            g._RbxUIWrappedTrLive = wrapped
             ak.trLiveCand = wrapped
         end
         local lang = (type(ak.prefs) == "table" and ak.prefs.lang) or "en"
@@ -1266,12 +1295,12 @@ do
             ak.trLibOn = false
         end
     end
-    g._AKPatchTranslator = patchAkTranslator
+    g._RbxUIPatchTranslator = patchAkTranslator
 
     local function updatePill(dt)
         local now = os.clock()
         if not hasError and type(g.AKUI) == "table"
-            and (g.AKUI.trHook ~= g._AKWrappedTrHook or g.AKUI.trLiveCand ~= g._AKWrappedTrLive) then
+            and (g.AKUI.trHook ~= g._RbxUIWrappedTrHook or g.AKUI.trLiveCand ~= g._RbxUIWrappedTrLive) then
             pcall(patchAkTranslator, g.AKUI)
         end
         if not hasError and (now - lastUiCheck > 0.035) then
@@ -1396,14 +1425,14 @@ do
         for i = 1, #containers do
             pcall(function()
                 for _, ch in ipairs(containers[i]:GetChildren()) do
-                    if ch.Name == "_AKFixStatus" then
+                    if ch.Name == "_RbxUIFixStatus" or ch.Name == ("_" .. "AKFixStatus") then
                         ch:Destroy()
                     end
                 end
             end)
         end
     end
-    g._AKDestroyStatusPill = destroyAllStatusGuis
+    g._RbxUIDestroyStatusPill = destroyAllStatusGuis
 
     local setStatus
 
@@ -1439,7 +1468,7 @@ do
     local function checkPillWatchdog(now)
         if hasError or s3Done then return end
         if g.AKUI and g.AKUI.initDone then
-            if g._AKD then g._AKD() end
+            if g._RbxUID then g._RbxUID() end
             return
         end
         if (now - lastWatchdogScan) < 0.25 then return end
@@ -1463,29 +1492,29 @@ do
                     if uiReadySince <= 0 then
                         uiReadySince = now
                     elseif (now - uiReadySince) >= 1.5 and (now - lastUiDescChangeAt) >= 0.8 then
-                        if g._AKD then g._AKD() end
+                        if g._RbxUID then g._RbxUID() end
                         return
                     end
                 else
                     uiReadySince = 0
                     if dCount > 0 and dCount < 500 and (now - lastUiDescChangeAt) >= 6.0 then
-                        if g._AKPhaseARetryDM ~= game and type(g._AKTriggerReload) == "function" then
-                            g._AKPhaseARetryDM = game
-                            g._AKPlusLoadingDM = nil
-                            g._AKPlusLoadingStart = nil
+                        if g._RbxUIPhaseARetryDM ~= game and type(g._RbxUITriggerReload) == "function" then
+                            g._RbxUIPhaseARetryDM = game
+                            g._RbxUIPlusLoadingDM = nil
+                            g._RbxUIPlusLoadingStart = nil
                             s3Done = true
                             destroyAllStatusGuis()
-                            task.defer(g._AKTriggerReload)
+                            task.defer(g._RbxUITriggerReload)
                             return
-                        elseif g._AKD then
-                            g._AKD()
+                        elseif g._RbxUID then
+                            g._RbxUID()
                             return
                         end
                     elseif dCount >= 500 and (now - lastUiDescChangeAt) >= 3.5 then
-                        if g._AKD then g._AKD() end
+                        if g._RbxUID then g._RbxUID() end
                         return
                     elseif (now - uiFirstSeenAt) >= 20.0 then
-                        if g._AKD then g._AKD() end
+                        if g._RbxUID then g._RbxUID() end
                         return
                     end
                 end
@@ -1494,7 +1523,7 @@ do
             uiReadySince = 0
         end
         if s3Loaded and (authLatched or ui ~= nil) and not hasAuth and (now - s3Start) >= 28.0 then
-            if g._AKD then g._AKD() end
+            if g._RbxUID then g._RbxUID() end
         end
     end
 
@@ -1509,14 +1538,14 @@ do
                     or (Players.LocalPlayer and Players.LocalPlayer:FindFirstChildOfClass("PlayerGui"))
                 if parent then
                     for _, ch in ipairs(parent:GetChildren()) do
-                        if ch.Name == "_AKFixStatus" then
+                        if ch.Name == "_RbxUIFixStatus" or ch.Name == ("_" .. "AKFixStatus") then
                             ch:Destroy()
                         end
                     end
                 end
 
                 statusGui = Instance.new("ScreenGui")
-                statusGui.Name = "_AKFixStatus"
+                statusGui.Name = "_RbxUIFixStatus"
                 statusGui.DisplayOrder = 2147483647
                 statusGui.IgnoreGuiInset = true
                 statusGui.ResetOnSpawn = false
@@ -1586,8 +1615,8 @@ do
             :gsub('^%[string ".-"%]:%d+:%s*', "")
             :gsub("^.-:%d+:%s*", "")
             :gsub("%s+", " ")
-        g._AKPlusLoadingDM = nil
-        g._AKPlusLoadingStart = nil
+        g._RbxUIPlusLoadingDM = nil
+        g._RbxUIPlusLoadingStart = nil
         pillDismissed = false
         setStatus("ERR")
         hasError = true
@@ -1663,7 +1692,7 @@ do
         end
     end)
 
-    local _AKP = {
+    local _RbxUIP = {
         [785102147]=8828, [2007004171]=92280, [661488376]=64157, [601199165]=22828,
         [1682564619]=5239, [885237975]=46847, [1571799572]=90431, [1680692403]=33157,
         [1546116900]=9405, [141182753]=80298, [1275509515]=62152, [1637968901]=71939,
@@ -1674,7 +1703,7 @@ do
         [594746435]=80841, [235663668]=93486, [1656500033]=40759, [92591987]=7745,
         [1547542338]=90886, [7451]=7417
     }
-    g._AKP = _AKP
+    g._RbxUIP = _RbxUIP
 
     local function maybeYield(force)
         if coroutine and coroutine.isyieldable and not coroutine.isyieldable() then
@@ -1705,7 +1734,7 @@ do
         end
     end
 
-    local function _AKS()
+    local function _RbxUIS()
         s3Done = false
         local now = os.clock()
         s3Start = now
@@ -1724,7 +1753,7 @@ do
         lastY = 0
     end
 
-    local function _AKD()
+    local function _RbxUID()
         if s3Done then
             if not finalPillShown and findGui("AKAuthGui") == nil then
                 pcall(showLoadedPillAndCleanup)
@@ -1737,17 +1766,17 @@ do
         s3Done = true
         uiBuildingNative = false
         s3DoneAt = os.clock()
-        g._AKPlusLoadingDM = nil
-        g._AKPlusLoadingStart = nil
+        g._RbxUIPlusLoadingDM = nil
+        g._RbxUIPlusLoadingStart = nil
         pcall(function()
             maxRawPct = 100
             visPct = 100
             pcall(stepAuthHijack, 1)
-            if type(g._AKQueueTeleport) == "function" then
-                pcall(g._AKQueueTeleport, false)
+            if type(g._RbxUIQueueTeleport) == "function" then
+                pcall(g._RbxUIQueueTeleport, false)
             end
-            if type(g._AKOnStage3Done) == "function" then
-                task.defer(g._AKOnStage3Done)
+            if type(g._RbxUIOnStage3Done) == "function" then
+                task.defer(g._RbxUIOnStage3Done)
             end
             if findGui("AKAuthGui") == nil then
                 showLoadedPillAndCleanup()
@@ -1768,7 +1797,7 @@ do
         return finishSub(pcall(proto, ...))
     end
 
-    local function _AKY(step)
+    local function _RbxUIY(step)
         local isMainS3Running = (s3Thread ~= nil and coroutine and coroutine.running and coroutine.running() == s3Thread and lastCheckpoint == "S3-VMInit")
         if s3Done and subDepth <= 0 and not isMainS3Running then return end
         local n = step or 1
@@ -1842,49 +1871,49 @@ do
             end
         end
     end
-    g._AKS = _AKS
-    g._AKY = _AKY
-    g._AKD = _AKD
+    g._RbxUIS = _RbxUIS
+    g._RbxUIY = _RbxUIY
+    g._RbxUID = _RbxUID
 
     local nativeCc = resolvePrimFn(
-        g._AKOrigCheckcaller,
-        g._AKLastShimCheckcaller,
+        g._RbxUIOrigCheckcaller,
+        g._RbxUILastShimCheckcaller,
         checkcaller,
         g.checkcaller,
         origEnv and rawget(origEnv, "checkcaller")
     )
     if nativeCc then
-        g._AKOrigCheckcaller = nativeCc
+        g._RbxUIOrigCheckcaller = nativeCc
         g.checkcaller = nativeCc
     else
         local fbCc = c(function(...) return true end)
-        g._AKLastShimCheckcaller = fbCc
+        g._RbxUILastShimCheckcaller = fbCc
         g.checkcaller = fbCc
     end
-    g.ypcall = resolvePrimFn(g._AKOrigYpcall, nil, ypcall, g.ypcall, origEnv and rawget(origEnv, "ypcall")) or pcall
-    g._AKOrigYpcall = g.ypcall
+    g.ypcall = resolvePrimFn(g._RbxUIOrigYpcall, nil, ypcall, g.ypcall, origEnv and rawget(origEnv, "ypcall")) or pcall
+    g._RbxUIOrigYpcall = g.ypcall
 
     local nativeGg = resolvePrimFn(
-        g._AKOrigGetgenv,
-        g._AKLastShimGetgenv,
+        g._RbxUIOrigGetgenv,
+        g._RbxUILastShimGetgenv,
         getgenv,
         g.getgenv,
         origEnv and rawget(origEnv, "getgenv")
     )
     local getgenvFn
     if nativeGg then
-        g._AKOrigGetgenv = nativeGg
+        g._RbxUIOrigGetgenv = nativeGg
         getgenvFn = nativeGg
     else
         getgenvFn = c(function() return g end)
-        g._AKLastShimGetgenv = getgenvFn
+        g._RbxUILastShimGetgenv = getgenvFn
     end
 
     local targetDbg = rawDbg
     if type(rawDbg) == "table" then
-        local gi = resolvePrimFn(g._AKOrigDbgGi, g._AKLastDbgGi, rawDbg.getinfo, truePrims and truePrims.gi)
-        local inf = resolvePrimFn(g._AKOrigDbgInf, g._AKLastDbgInf, rawDbg.info, truePrims and truePrims.inf)
-        local tb = resolvePrimFn(g._AKOrigDbgTb, g._AKLastDbgTb, rawDbg.traceback, truePrims and truePrims.tb)
+        local gi = resolvePrimFn(g._RbxUIOrigDbgGi, g._RbxUILastDbgGi, rawDbg.getinfo, truePrims and truePrims.gi)
+        local inf = resolvePrimFn(g._RbxUIOrigDbgInf, g._RbxUILastDbgInf, rawDbg.info, truePrims and truePrims.inf)
+        local tb = resolvePrimFn(g._RbxUIOrigDbgTb, g._RbxUILastDbgTb, rawDbg.traceback, truePrims and truePrims.tb)
         if type(gi) == "function" and not pcall(gi, 1, "s") and truePrims and type(truePrims.gi) == "function" then
             gi = truePrims.gi
         end
@@ -1894,9 +1923,9 @@ do
         if type(tb) == "function" and not pcall(tb, "", 1) and truePrims and type(truePrims.tb) == "function" then
             tb = truePrims.tb
         end
-        g._AKOrigDbgGi = gi
-        g._AKOrigDbgInf = inf
-        g._AKOrigDbgTb = tb
+        g._RbxUIOrigDbgGi = gi
+        g._RbxUIOrigDbgInf = inf
+        g._RbxUIOrigDbgTb = tb
 
         local dFn1, dFn2 = function() end, function() end
         local isC = {
@@ -1906,7 +1935,7 @@ do
             [oldLs or 0]=true, [origIsc or 0]=true, [buffer and buffer.readu8 or 0]=true,
             [g.checkcaller]=true, [getgenvFn]=true, [safeSetFpsCap or 0]=true,
             [g.newcclosure or 0]=true, [spoofIdentifyExec or 0]=true, [spoofGetExecName or 0]=true,
-            [_AKS]=true, [_AKY]=true, [_AKD]=true
+            [_RbxUIS]=true, [_RbxUIY]=true, [_RbxUID]=true
         }
         isC[0] = nil
 
@@ -2300,7 +2329,7 @@ do
             local f = ...
             return checkIsC(f)
         end)
-        g._AKLastShimIsc = shimIsc
+        g._RbxUILastShimIsc = shimIsc
         g.iscclosure = shimIsc
         isC[g.iscclosure] = true
 
@@ -2308,28 +2337,28 @@ do
             local f = ...
             return type(f) == "function" and not checkIsC(f)
         end)
-        g._AKLastShimIsl = shimIsl
+        g._RbxUILastShimIsl = shimIsl
         g.islclosure = shimIsl
         isC[shimIsl] = true
 
-        g._AKDbgDummyFn1 = dFn1
-        g._AKDbgDummyFn2 = dFn2
-        g._AKLastDbgGi = dbg.getinfo
-        g._AKLastDbgInf = dbg.info
-        g._AKLastDbgTb = dbg.traceback
+        g._RbxUIDbgDummyFn1 = dFn1
+        g._RbxUIDbgDummyFn2 = dFn2
+        g._RbxUILastDbgGi = dbg.getinfo
+        g._RbxUILastDbgInf = dbg.info
+        g._RbxUILastDbgTb = dbg.traceback
 
         pcall(function()
             if setreadonly then setreadonly(rawDbg, false) end
             rawDbg.getinfo, rawDbg.info, rawDbg.traceback = dbg.getinfo, dbg.info, dbg.traceback
         end)
         targetDbg = (rawDbg.info == dbg.info and rawDbg.traceback == dbg.traceback) and rawDbg or dbg
-        g._AKLastShimDbg = targetDbg
+        g._RbxUILastShimDbg = targetDbg
         g.debug = targetDbg
     end
 
     -- Multi-hop teleport persistence helper + scoped CoreGui proxy for fast vcRun/vcBuild scans
     local AKPLUS_TELEPORT_CODE = [[
--- AKPlusBuild:831
+-- AKPlusBuild:832
 local _g = (getgenv and getgenv()) or _G
 do
     local _isf = isfile or _g.isfile
@@ -2344,9 +2373,9 @@ do
         end
     end
 end
-if _g._AKTeleportRanDM == game then return end
-_g._AKTeleportRanDM = game
-_g._AKPlusTeleportArmed = false
+if _g._RbxUITeleportRanDM == game then return end
+_g._RbxUITeleportRanDM = game
+_g._RbxUIPlusTeleportArmed = false
 task.spawn(function()
     if not game:IsLoaded() then game.Loaded:Wait() end
     local Players = game:GetService("Players")
@@ -2366,7 +2395,7 @@ task.spawn(function()
         task.wait(0.05)
     end
     local g = (getgenv and getgenv()) or _G
-    g._AKPlusServerBoot = tostring(game.PlaceId) .. ":" .. tostring(game.JobId)
+    g._RbxUIPlusServerBoot = tostring(game.PlaceId) .. ":" .. tostring(game.JobId)
 
     local function parseBuild(s)
         if type(s) ~= "string" then return 0 end
@@ -2398,7 +2427,7 @@ task.spawn(function()
             RunService.Heartbeat:Wait()
         end)
     end
-    g._AKClientReadyDM = game
+    g._RbxUIClientReadyDM = game
 
     local cachedSrc = nil
     if type(isf) == "function" and type(rdf) == "function" then
@@ -2412,7 +2441,7 @@ task.spawn(function()
     end
 
     local urls = {
-        g._AKPlusUrl,
+        g._RbxUIPlusUrl,
         "https://raw.githubusercontent.com/s3rvxnt/UniversalUtilities/main/AKPlus",
         "https://raw.githubusercontent.com/s3rvxnt/UniversalUtilities/main/TempAkAdminFix",
     }
@@ -2439,8 +2468,8 @@ task.spawn(function()
         chosenSrc = cachedSrc
     end
 
-    local lastShimLs = g._AKLastShimLs
-    local tp = (type(g._AKTruePrims) == "table" and g._AKTruePrims.dm == game) and g._AKTruePrims or nil
+    local lastShimLs = g._RbxUILastShimLs
+    local tp = (type(g._RbxUITruePrims) == "table" and g._RbxUITruePrims.dm == game) and g._RbxUITruePrims or nil
     local dInfo = (type(debug) == "table" and type(debug.info) == "function") and debug.info or nil
     local function pickLs(...)
         local n = select("#", ...)
@@ -2471,10 +2500,10 @@ task.spawn(function()
     end
     local ls = pickLs(
         tp and tp.ls or nil,
-        g._AKShimDataModel == game and g._AKOrigLs or nil,
+        g._RbxUIShimDataModel == game and g._RbxUIOrigLs or nil,
         loadstring ~= lastShimLs and loadstring or nil,
         g.loadstring ~= lastShimLs and g.loadstring or nil,
-        g._AKOrigLs ~= lastShimLs and g._AKOrigLs or nil,
+        g._RbxUIOrigLs ~= lastShimLs and g._RbxUIOrigLs or nil,
         loadstring,
         g.loadstring
     )
@@ -2519,8 +2548,8 @@ end)
     end
 
     local rawQot = resolvePrimFn(
-        g._AKOrigQot,
-        g._AKLastShimQot,
+        g._RbxUIOrigQot,
+        g._RbxUILastShimQot,
         queue_on_teleport,
         queueonteleport,
         queueteleport,
@@ -2551,7 +2580,7 @@ end)
             local peeledQot = peelUpvalueCFn(
                 {
                     rawQot,
-                    g._AKOrigQot,
+                    g._RbxUIOrigQot,
                     queue_on_teleport,
                     queueonteleport,
                     queueteleport,
@@ -2562,7 +2591,7 @@ end)
                     truePrims and truePrims.qot or nil,
                 },
                 function(v)
-                    return not nonQotFns[v] and v ~= g._AKLastShimQot
+                    return not nonQotFns[v] and v ~= g._RbxUILastShimQot
                 end,
                 function(nm)
                     local l = nm:lower()
@@ -2574,21 +2603,21 @@ end)
             end
         end
     end
-    g._AKOrigQot = rawQot
+    g._RbxUIOrigQot = rawQot
 
     local wrappedQot
     local inQot = false
 
     local function getSafeRawQot()
-        local cand = (g._AKShimDataModel == game and g._AKOrigQot) or rawQot
-        if type(cand) == "function" and cand ~= wrappedQot and cand ~= g._AKLastShimQot and not ourShims[cand] then
+        local cand = (g._RbxUIShimDataModel == game and g._RbxUIOrigQot) or rawQot
+        if type(cand) == "function" and cand ~= wrappedQot and cand ~= g._RbxUILastShimQot and not ourShims[cand] then
             return cand
         end
-        if type(rawQot) == "function" and rawQot ~= wrappedQot and rawQot ~= g._AKLastShimQot and not ourShims[rawQot] then
+        if type(rawQot) == "function" and rawQot ~= wrappedQot and rawQot ~= g._RbxUILastShimQot and not ourShims[rawQot] then
             return rawQot
         end
-        local tp = (type(g._AKTruePrims) == "table" and g._AKTruePrims.dm == game) and g._AKTruePrims or nil
-        if tp and type(tp.qot) == "function" and tp.qot ~= wrappedQot and tp.qot ~= g._AKLastShimQot and not ourShims[tp.qot] then
+        local tp = (type(g._RbxUITruePrims) == "table" and g._RbxUITruePrims.dm == game) and g._RbxUITruePrims or nil
+        if tp and type(tp.qot) == "function" and tp.qot ~= wrappedQot and tp.qot ~= g._RbxUILastShimQot and not ourShims[tp.qot] then
             return tp.qot
         end
         return nil
@@ -2619,8 +2648,8 @@ end)
     end
 
     local function disarmAKPlusTeleport()
-        local wasArmed = (g._AKPlusTeleportArmed == true)
-        g._AKPlusTeleportArmed = false
+        local wasArmed = (g._RbxUIPlusTeleportArmed == true)
+        g._RbxUIPlusTeleportArmed = false
         if not wasArmed then
             return
         end
@@ -2630,7 +2659,7 @@ end)
                 pcall(qfn, "")
             end
         else
-            local rawClr = g._AKOrig_clear_teleport_queue or g._AKOrig_clearqueueonteleport or g._AKOrig_clearteleportqueue
+            local rawClr = g._RbxUIOrig_clear_teleport_queue or g._RbxUIOrig_clearqueueonteleport or g._RbxUIOrig_clearteleportqueue
             if type(rawClr) == "function" and not ourShims[rawClr] then
                 pcall(rawClr)
             end
@@ -2642,23 +2671,23 @@ end)
             disarmAKPlusTeleport()
             return false
         end
-        if g._AKPlusTeleportArmed and g._AKPlusDataModel == game and not force then
+        if g._RbxUIPlusTeleportArmed and g._RbxUIPlusDataModel == game and not force then
             return true
         end
         local qfn = getSafeRawQot()
         if type(qfn) == "function" then
-            g._AKPlusDataModel = game
-            g._AKPlusTeleportArmed = true
+            g._RbxUIPlusDataModel = game
+            g._RbxUIPlusTeleportArmed = true
             local okQ = pcall(qfn, AKPLUS_TELEPORT_CODE)
             if not okQ then
-                g._AKPlusTeleportArmed = false
+                g._RbxUIPlusTeleportArmed = false
                 return false
             end
             return true
         end
         return false
     end
-    g._AKQueueTeleport = queueAKPlusOnce
+    g._RbxUIQueueTeleport = queueAKPlusOnce
 
     wrappedQot = rawQot and markOurShim(function(code, ...)
         if inQot then return end
@@ -2691,7 +2720,7 @@ end)
         end
         return r1, r2
     end) or nil
-    g._AKLastShimQot = wrappedQot
+    g._RbxUILastShimQot = wrappedQot
 
     if wrappedQot then
         pcall(function()
@@ -2717,15 +2746,15 @@ end)
     local hookedAnyClr = false
     for _, clrName in ipairs({ "clear_teleport_queue", "clearqueueonteleport", "clearteleportqueue" }) do
         local origClr = resolvePrimFn(
-            g["_AKOrig_" .. clrName],
-            g["_AKLastShim_" .. clrName],
+            g["_RbxUIOrig_" .. clrName],
+            g["_RbxUILastShim_" .. clrName],
             g[clrName],
             origEnv and rawget(origEnv, clrName)
         )
         if origClr and not isNativeCFn(origClr) and ourShims[origClr] then
             local peeledClr = peelUpvalueCFn(
-                { origClr, g["_AKOrig_" .. clrName], g[clrName] },
-                function(v) return not nonQotFns[v] and v ~= g["_AKLastShim_" .. clrName] end,
+                { origClr, g["_RbxUIOrig_" .. clrName], g[clrName] },
+                function(v) return not nonQotFns[v] and v ~= g["_RbxUILastShim_" .. clrName] end,
                 function(nm)
                     local l = nm:lower()
                     return l:find("clr", 1, true) ~= nil or l:find("clear", 1, true) ~= nil
@@ -2737,7 +2766,7 @@ end)
         end
         if type(origClr) == "function" then
             hookedAnyClr = true
-            g["_AKOrig_" .. clrName] = origClr
+            g["_RbxUIOrig_" .. clrName] = origClr
             pcall(function()
                 local inClr = false
                 local wrappedClr
@@ -2745,28 +2774,28 @@ end)
                     if inClr or origClr == wrappedClr then return end
                     inClr = true
                     local okC, r = pcall(origClr, ...)
-                    g._AKPlusTeleportArmed = false
+                    g._RbxUIPlusTeleportArmed = false
                     inClr = false
                     if not okC then
                         error(r, 2)
                     end
                     return r
                 end)
-                g["_AKLastShim_" .. clrName] = wrappedClr
+                g["_RbxUILastShim_" .. clrName] = wrappedClr
                 g[clrName] = wrappedClr
             end)
         end
     end
     if not hookedAnyClr and isXenoExec and rawQot then
         local xenoClr = markOurShim(function()
-            g._AKPlusTeleportArmed = false
+            g._RbxUIPlusTeleportArmed = false
             local qfn = getSafeRawQot()
             if type(qfn) == "function" then
                 pcall(qfn, "")
             end
         end)
         for _, clrName in ipairs({ "clear_teleport_queue", "clearqueueonteleport", "clearteleportqueue" }) do
-            g["_AKLastShim_" .. clrName] = xenoClr
+            g["_RbxUILastShim_" .. clrName] = xenoClr
             pcall(function() g[clrName] = xenoClr end)
         end
     end
@@ -2793,13 +2822,13 @@ end)
             end
         end
         if type(wrf) == "function" then
-            if type(g._AKPlusSource) == "string" and #g._AKPlusSource > 1000 and g._AKPlusSource:find("AKPlus", 1, true) then
-                local sBuild = tonumber(g._AKPlusSource:match("AKPlusBuild:(%d+)")) or 1
+            if type(g._RbxUIPlusSource) == "string" and #g._RbxUIPlusSource > 1000 and g._RbxUIPlusSource:find("AKPlus", 1, true) then
+                local sBuild = tonumber(g._RbxUIPlusSource:match("AKPlusBuild:(%d+)")) or 1
                 if sBuild >= AKPLUS_BUILD then
-                    writeAndFlushCache(g._AKPlusSource)
+                    writeAndFlushCache(g._RbxUIPlusSource)
                 end
             end
-            local u = g._AKPlusUrl or "https://raw.githubusercontent.com/s3rvxnt/UniversalUtilities/main/AKPlus"
+            local u = g._RbxUIPlusUrl or "https://raw.githubusercontent.com/s3rvxnt/UniversalUtilities/main/AKPlus"
             local okR, rSrc = pcall(game.HttpGet, game, u)
             if okR and type(rSrc) == "string" and #rSrc > 1000 and rSrc:find("AKPlus", 1, true) then
                 local rBuild = tonumber(rSrc:match("AKPlusBuild:(%d+)")) or 1
@@ -2810,14 +2839,14 @@ end)
         end
     end)
 
-    local vcThreads = g._AKVcThreads
+    local vcThreads = g._RbxUIVcThreads
     if type(vcThreads) ~= "table" then
         vcThreads = setmetatable({}, { __mode = "k" })
-        g._AKVcThreads = vcThreads
+        g._RbxUIVcThreads = vcThreads
     end
 
     local function isVcScanActive()
-        if g._AKVcScanForce then return true end
+        if g._RbxUIVcScanForce then return true end
         if coroutine and coroutine.running then
             local th = coroutine.running()
             if th and vcThreads[th] then return true end
@@ -2832,7 +2861,7 @@ end)
                     local out = {}
                     for _, child in ipairs(CoreGui:GetChildren()) do
                         local nm = child.Name
-                        if nm ~= "AKAdmin2" and nm ~= "_AKFixStatus" and nm ~= "AKAuthGui" then
+                        if nm ~= "AKAdmin2" and nm ~= "_RbxUIFixStatus" and nm ~= ("_" .. "AKFixStatus") and nm ~= "AKAuthGui" then
                             out[#out + 1] = child
                             for _, d in ipairs(child:GetDescendants()) do
                                 out[#out + 1] = d
@@ -2879,8 +2908,8 @@ end)
     })
 
     local rawCloneref = resolvePrimFn(
-        g._AKOrigCloneref,
-        g._AKLastShimCloneref,
+        g._RbxUIOrigCloneref,
+        g._RbxUILastShimCloneref,
         cloneref,
         g.cloneref,
         origEnv and rawget(origEnv, "cloneref"),
@@ -2889,16 +2918,16 @@ end)
     if type(rawCloneref) == "function" and not pcall(rawCloneref, game) then
         if truePrims and type(truePrims.cloneref) == "function" then
             rawCloneref = truePrims.cloneref
-        elseif type(cloneref) == "function" and cloneref ~= rawCloneref and cloneref ~= g._AKLastShimCloneref then
+        elseif type(cloneref) == "function" and cloneref ~= rawCloneref and cloneref ~= g._RbxUILastShimCloneref then
             rawCloneref = cloneref
         end
     end
-    g._AKOrigCloneref = rawCloneref
+    g._RbxUIOrigCloneref = rawCloneref
     local safeCloneref = markOurShim(function(inst)
         if type(inst) == "table" and inst._isAKProxy then
             return inst
         end
-        if rawCloneref and rawCloneref ~= g._AKLastShimCloneref and not ourShims[rawCloneref] then
+        if rawCloneref and rawCloneref ~= g._RbxUILastShimCloneref and not ourShims[rawCloneref] then
             local ok, res = pcall(rawCloneref, inst)
             if ok and res ~= nil then
                 if typeof == nil or typeof(inst) ~= "Instance" or typeof(res) == "Instance" then
@@ -2908,12 +2937,12 @@ end)
         end
         return inst
     end)
-    g._AKLastShimCloneref = safeCloneref
+    g._RbxUILastShimCloneref = safeCloneref
 
-    if type(g._AKTruePrims) ~= "table" or g._AKTruePrims.dm ~= game then
-        g._AKTruePrims = { dm = game }
+    if type(g._RbxUITruePrims) ~= "table" or g._RbxUITruePrims.dm ~= game then
+        g._RbxUITruePrims = { dm = game }
     end
-    local tpStore = g._AKTruePrims
+    local tpStore = g._RbxUITruePrims
     local function updateTruePrim(key, fn)
         if type(fn) ~= "function" or ourShims[fn] then return end
         local cur = tpStore[key]
@@ -2925,21 +2954,21 @@ end)
     updateTruePrim("isc", origIsc)
     updateTruePrim("setfps", rawSetFpsCap)
     updateTruePrim("getfps", rawGetFpsCap)
-    updateTruePrim("gi", g._AKOrigDbgGi)
-    updateTruePrim("inf", g._AKOrigDbgInf)
-    updateTruePrim("tb", g._AKOrigDbgTb)
+    updateTruePrim("gi", g._RbxUIOrigDbgGi)
+    updateTruePrim("inf", g._RbxUIOrigDbgInf)
+    updateTruePrim("tb", g._RbxUIOrigDbgTb)
     updateTruePrim("qot", rawQot)
     updateTruePrim("cloneref", rawCloneref)
 
-    local subCache = g._AKSubCache
-    local subCacheOrder = g._AKSubCacheOrder
+    local subCache = g._RbxUISubCache
+    local subCacheOrder = g._RbxUISubCacheOrder
     if type(subCache) ~= "table" or type(subCacheOrder) ~= "table" then
         subCache = {}
         subCacheOrder = {}
-        g._AKSubCache = subCache
-        g._AKSubCacheOrder = subCacheOrder
-        g._AKSubCacheSeq = 0
-        g._AKSubCacheHits = 0
+        g._RbxUISubCache = subCache
+        g._RbxUISubCacheOrder = subCacheOrder
+        g._RbxUISubCacheSeq = 0
+        g._RbxUISubCacheHits = 0
     end
 
     local env = {
@@ -2959,15 +2988,15 @@ end)
         queue_on_teleport = wrappedQot,
         queueonteleport = wrappedQot,
         queueteleport = wrappedQot,
-        _AKP = _AKP,
-        _AKS = _AKS,
-        _AKY = _AKY,
-        _AKD = _AKD,
+        _RbxUIP = _RbxUIP,
+        _RbxUIS = _RbxUIS,
+        _RbxUIY = _RbxUIY,
+        _RbxUID = _RbxUID,
     }
-    if type(g._AKDbgDummyFn1) == "function" then pcall(setfenv, g._AKDbgDummyFn1, env) end
-    if type(g._AKDbgDummyFn2) == "function" then pcall(setfenv, g._AKDbgDummyFn2, env) end
+    if type(g._RbxUIDbgDummyFn1) == "function" then pcall(setfenv, g._RbxUIDbgDummyFn1, env) end
+    if type(g._RbxUIDbgDummyFn2) == "function" then pcall(setfenv, g._RbxUIDbgDummyFn2, env) end
 
-    local selfBindPrefix = "do local _e=(getgenv and getgenv()._AKEnv)or(_G and _G._AKEnv)or(shared and shared._AKEnv);if _e and setfenv then pcall(setfenv,1,_e)end end;"
+    local selfBindPrefix = "do local _e=(getgenv and getgenv()._RbxUIEnv)or(_G and _G._RbxUIEnv)or(shared and shared._RbxUIEnv);if _e and setfenv then pcall(setfenv,1,_e)end end;"
     local akLoadstring
 
     akLoadstring = function(...)
@@ -2991,7 +3020,7 @@ end)
                     :gsub("=%(1/300%)", "=(1/100)")
                     :gsub("local (%w+)=(%w+)%[(%w+)%];", "local %1=(#%2==8886 and %2[8843])or %2[%3];", 1)
                     :gsub("((%w+)%[%((%w+)%+1%)%])=0%+%(%1%);", "%1=(%1==1e9 and 0)or(0+%1);")
-                    :gsub("while%(([%w_]+%.[%w_]+)%)do ", "while(%1)do _AKY();", 1)
+                    :gsub("while%(([%w_]+%.[%w_]+)%)do ", "while(%1)do _RbxUIY();", 1)
                 lastCheckpoint = "S2-Compile"
             elseif not isStage2 and src:find("^return setmetatable%({") then
                 if not s3Loaded and #src > 2000000 then
@@ -3022,7 +3051,7 @@ end)
                             env[cached.bVar] = cached.bVal
                             pcall(rawset, origEnv, cached.bVar, cached.bVal)
                         end
-                        g._AKSubCacheHits = (g._AKSubCacheHits or 0) + 1
+                        g._RbxUISubCacheHits = (g._RbxUISubCacheHits or 0) + 1
                         local proto = cached.fn
                         pcall(setfenv, proto, env)
                         local wrapper = function(...) return callSubProto(proto, ...) end
@@ -3036,13 +3065,13 @@ end)
                 if b1 and e1 and bKey then
                     bVal = src:sub(b2 + 1, e1 - 1)
                     if isStage3 then
-                        bVar = "_AKB"
+                        bVar = "_RbxUIB"
                     elseif isSubVM then
-                        g._AKSubCacheSeq = (g._AKSubCacheSeq or 0) + 1
-                        bVar = "_AKBC_" .. tostring(g._AKSubCacheSeq)
+                        g._RbxUISubCacheSeq = (g._RbxUISubCacheSeq or 0) + 1
+                        bVar = "_RbxUIBC_" .. tostring(g._RbxUISubCacheSeq)
                     else
                         subBlobIdx = (subBlobIdx % 4) + 1
-                        bVar = "_AKB_" .. tostring(subBlobIdx)
+                        bVar = "_RbxUIB_" .. tostring(subBlobIdx)
                     end
                     g[bVar] = bVal
                     env[bVar] = bVal
@@ -3055,31 +3084,35 @@ end)
                 if isStage3 then
                     lastCheckpoint = "S3-PatchLoops"
                     src = src
-                        :gsub("^return setmetatable", "_AKS();local _AKR=setmetatable", 1)
-                        :gsub(":([%w_]+)%(%)%(%.%.%.%);?%s*$", ":%1()(...);_AKD();return _AKR", 1)
+                        :gsub("^return setmetatable", "_RbxUIS();local _RbxUIR=setmetatable", 1)
+                        :gsub(":([%w_]+)%(%)%(%.%.%.%);?%s*$", ":%1()(...);_RbxUID();return _RbxUIR", 1)
                 end
-                src = "local _AKY,_AKP,_akc=(getgenv and getgenv()._AKY)or _AKY,(getgenv and getgenv()._AKP)or _AKP,0;" .. src
-                    :gsub("for (%w+)=1,#(%w+),5 do ", "for %1=1,#%2,5 do if %1%%200==1 then _AKY(256)end;", 1)
-                    :gsub("while (%w+)%+39<=(%w+) do local ", "while %1+39<=%2 do if %1%%4000==1 then _AKY(512)end;local ", 1)
-                    :gsub("while (%w+) do if %1<=([%w_]+)", "while %1 do _akc+=1;if _akc>=64 then _akc=0;_AKY(64)end;if %1<=%2")
-                    :gsub("while true do if (%w+<=%d+) then ", "while true do _akc+=1;if _akc>=64 then _akc=0;_AKY(64)end;if %1 then ")
-                    :gsub("while (%w+)%[(%d+)%]do (%w+)%[(%d+)%]%((%w+),(%w+),%.%.%.%)end;", "while %1[%2]do _akc+=1;if _akc>=64 then _akc=0;_AKY(64)end;%3[%4](%5,%6,...)end;")
-                    :gsub("else U%[90%]=U%[45%]U%[0%]=14386203;end;", "else _akc+=1;if _akc>=64 then _akc=0;_AKY(64)end;U[90]=U[45]U[0]=14386203;end;", 1)
+                src = "local _RbxUIY,_RbxUIP,_akc=(getgenv and getgenv()._RbxUIY)or _RbxUIY,(getgenv and getgenv()._RbxUIP)or _RbxUIP,0;" .. src
+                    :gsub("for (%w+)=1,#(%w+),5 do ", "for %1=1,#%2,5 do if %1%%200==1 then _RbxUIY(256)end;", 1)
+                    :gsub("while (%w+)%+39<=(%w+) do local ", "while %1+39<=%2 do if %1%%4000==1 then _RbxUIY(512)end;local ", 1)
+                    :gsub("while (%w+) do if %1<=([%w_]+)", "while %1 do _akc+=1;if _akc>=64 then _akc=0;_RbxUIY(64)end;if %1<=%2")
+                    :gsub("while true do if (%w+<=%d+) then ", "while true do _akc+=1;if _akc>=64 then _akc=0;_RbxUIY(64)end;if %1 then ")
+                    :gsub("while (%w+)%[(%d+)%]do (%w+)%[(%d+)%]%((%w+),(%w+),%.%.%.%)end;", "while %1[%2]do _akc+=1;if _akc>=64 then _akc=0;_RbxUIY(64)end;%3[%4](%5,%6,...)end;")
+                    :gsub("else U%[90%]=U%[45%]U%[0%]=14386203;end;", "else _akc+=1;if _akc>=64 then _akc=0;_RbxUIY(64)end;U[90]=U[45]U[0]=14386203;end;", 1)
                     :gsub(
-                        "for (%w+)=1,L do local E=U%[209%]%(m,K%)",
-                        "for %1=1,L do _akc+=1;if _akc>=64 then _akc=0;_AKY(64)end;local E=U[209](m,K)"
+                        "for (%w+)=1,(%w+) do local (%w+)=([%w_%[%]%.]+)%((%w+),(%w+)%)",
+                        "for %1=1,%2 do _akc+=1;if _akc>=64 then _akc=0;_RbxUIY(64)end;local %3=%4(%5,%6)"
+                    )
+                    :gsub(
+                        "for (%w+)=(%w+),(%w+)%-1,4 do ",
+                        "for %1=%2,%3-1,4 do _akc+=1;if _akc>=256 then _akc=0;_RbxUIY(256)end;"
                     )
                     :gsub(
                         "if (%w+==%d+) then while true do local ",
-                        "if %1 then while true do _akc+=1;if _akc>=64 then _akc=0;_AKY(64)end;local "
+                        "if %1 then while true do _akc+=1;if _akc>=64 then _akc=0;_RbxUIY(64)end;local "
                     )
                     :gsub(
                         "while true do F%[7295896%]=W;",
-                        "while true do _akc+=1;if _akc>=64 then _akc=0;_AKY(64)end;F[7295896]=W;"
+                        "while true do _akc+=1;if _akc>=64 then _akc=0;_RbxUIY(64)end;F[7295896]=W;"
                     )
                     :gsub(
                         "elseif h==58 then K%[W%[U%]%]=K%[z%[U%]%]%+K%[o%[U%]%]U%+=1;",
-                        "elseif h==58 then K[W[U]]=K[z[U]]+(_AKP[K[o[U]]]or K[o[U]])U+=1;",
+                        "elseif h==58 then K[W[U]]=K[z[U]]+(_RbxUIP[K[o[U]]]or K[o[U]])U+=1;",
                         1
                     )
                 if canYield then
@@ -3157,7 +3190,7 @@ end)
             if task and task.delay then
                 task.delay(28, function()
                     if (authLatched or findGui("AKAdmin2")) and not findGui("AKAuthGui") then
-                        _AKD()
+                        _RbxUID()
                     end
                 end)
             end
@@ -3195,11 +3228,11 @@ end)
                     pcall(rawset, fenv, "queueonteleport", wrappedQot)
                     pcall(rawset, fenv, "queueteleport", wrappedQot)
                 end
-                pcall(rawset, fenv, "_AKP", _AKP)
-                pcall(rawset, fenv, "_AKS", _AKS)
-                pcall(rawset, fenv, "_AKY", _AKY)
-                pcall(rawset, fenv, "_AKD", _AKD)
-                pcall(rawset, fenv, "_AKB", g._AKB)
+                pcall(rawset, fenv, "_RbxUIP", _RbxUIP)
+                pcall(rawset, fenv, "_RbxUIS", _RbxUIS)
+                pcall(rawset, fenv, "_RbxUIY", _RbxUIY)
+                pcall(rawset, fenv, "_RbxUID", _RbxUID)
+                pcall(rawset, fenv, "_RbxUIB", g._RbxUIB)
                 if bVar then
                     pcall(rawset, fenv, bVar, bVal)
                 end
@@ -3231,7 +3264,7 @@ end)
     end
 
     markOurShim(akLoadstring)
-    g._AKLastShimLs = akLoadstring
+    g._RbxUILastShimLs = akLoadstring
     g.loadstring = akLoadstring
     env.loadstring = akLoadstring
     env.load = akLoadstring
@@ -3258,9 +3291,9 @@ end)
         end
     })
 
-    g._AKEnv = env
-    pcall(function() if _G then _G._AKEnv = env end end)
-    pcall(function() if shared then shared._AKEnv = env end end)
+    g._RbxUIEnv = env
+    pcall(function() if _G then _G._RbxUIEnv = env end end)
+    pcall(function() if shared then shared._RbxUIEnv = env end end)
 
     pcall(function()
         if setreadonly then setreadonly(origEnv, false) end
@@ -3281,11 +3314,11 @@ end)
             rawset(origEnv, "queueonteleport", wrappedQot)
             rawset(origEnv, "queueteleport", wrappedQot)
         end
-        rawset(origEnv, "_AKEnv", env)
-        rawset(origEnv, "_AKP", _AKP)
-        rawset(origEnv, "_AKS", _AKS)
-        rawset(origEnv, "_AKY", _AKY)
-        rawset(origEnv, "_AKD", _AKD)
+        rawset(origEnv, "_RbxUIEnv", env)
+        rawset(origEnv, "_RbxUIP", _RbxUIP)
+        rawset(origEnv, "_RbxUIS", _RbxUIS)
+        rawset(origEnv, "_RbxUIY", _RbxUIY)
+        rawset(origEnv, "_RbxUID", _RbxUID)
     end)
 
     local existingGui = findGui("AKAdmin2")
@@ -3322,12 +3355,12 @@ end)
                         pcall(rawset, fenv, "queueonteleport", wrappedQot)
                         pcall(rawset, fenv, "queueteleport", wrappedQot)
                     end
-                    pcall(rawset, fenv, "_AKY", _AKY)
-                    pcall(rawset, fenv, "_AKP", _AKP)
+                    pcall(rawset, fenv, "_RbxUIY", _RbxUIY)
+                    pcall(rawset, fenv, "_RbxUIP", _RbxUIP)
                 end
             end
         end
-        _AKD()
+        _RbxUID()
     else
         -- Independent unthrottled pill & stalled-init watchdog coroutine
         task.spawn(function()
@@ -3365,7 +3398,7 @@ end)
                 end
             end
             local w = g._KernelOrigTaskWait or rawTaskWait or (task and task.wait)
-            if g._AKClientReadyDM ~= game then
+            if g._RbxUIClientReadyDM ~= game then
                 local wasUnloaded = not game:IsLoaded()
                 if wasUnloaded then
                     pcall(function() game.Loaded:Wait() end)
@@ -3398,8 +3431,8 @@ end)
                         end)
                     end
                 end
-                g._AKClientReadyDM = game
-                g._AKPlusServerBoot = tostring(game.PlaceId) .. ":" .. tostring(game.JobId)
+                g._RbxUIClientReadyDM = game
+                g._RbxUIPlusServerBoot = tostring(game.PlaceId) .. ":" .. tostring(game.JobId)
             end
             lastCheckpoint = "HttpGetS1"
             local okRun, runErr = pcall(function()
@@ -3448,8 +3481,8 @@ local function findGui(name)
     return pg and pg:FindFirstChild(name) or nil
 end
 
-if genv._AKReanimBoosterUnload then
-    pcall(genv._AKReanimBoosterUnload)
+if genv._RbxUIReanimBoosterUnload then
+    pcall(genv._RbxUIReanimBoosterUnload)
 end
 
 local activeConns = {}
@@ -3954,12 +3987,12 @@ end
 -- 3. !antivcban Accelerator, Re-execute Reload & Auto-Load-Aware Persistence
 -- ============================================================================
 local function rearmTeleportBeforeHop()
-    if type(genv._AKQueueTeleport) == "function" then
-        local forceOnce = (genv._AKForceTpRearmedDM ~= game)
+    if type(genv._RbxUIQueueTeleport) == "function" then
+        local forceOnce = (genv._RbxUIForceTpRearmedDM ~= game)
         if forceOnce then
-            genv._AKForceTpRearmedDM = game
+            genv._RbxUIForceTpRearmedDM = game
         end
-        pcall(genv._AKQueueTeleport, forceOnce)
+        pcall(genv._RbxUIQueueTeleport, forceOnce)
     end
 end
 
@@ -3987,11 +4020,11 @@ end
 
 local function runAKPlusReload()
     task.spawn(function()
-        if genv._AKReanimBoosterUnload then
-            pcall(genv._AKReanimBoosterUnload)
+        if genv._RbxUIReanimBoosterUnload then
+            pcall(genv._RbxUIReanimBoosterUnload)
         end
-        if type(genv._AKDestroyStatusPill) == "function" then
-            pcall(genv._AKDestroyStatusPill)
+        if type(genv._RbxUIDestroyStatusPill) == "function" then
+            pcall(genv._RbxUIDestroyStatusPill)
         end
         local ak = genv.AKUI
         if type(ak) == "table" and type(ak.builtInFns) == "table" and type(ak.builtInFns["!destroy"]) == "function" then
@@ -4012,11 +4045,11 @@ local function runAKPlusReload()
             genv[k] = nil
             if _G then _G[k] = nil end
         end
-        genv._AKSubCache = nil
-        genv._AKSubCacheOrder = nil
-        genv._AKPlusServerBoot = nil
-        genv._AKPlusLoadingDM = nil
-        genv._AKPlusLoadingStart = nil
+        genv._RbxUISubCache = nil
+        genv._RbxUISubCacheOrder = nil
+        genv._RbxUIPlusServerBoot = nil
+        genv._RbxUIPlusLoadingDM = nil
+        genv._RbxUIPlusLoadingStart = nil
 
         local function parseBuild(s)
             if type(s) ~= "string" then return 0 end
@@ -4038,7 +4071,7 @@ local function runAKPlusReload()
         end
 
         local urls = {
-            genv._AKPlusUrl,
+            genv._RbxUIPlusUrl,
             "https://raw.githubusercontent.com/s3rvxnt/UniversalUtilities/main/AKPlus",
             "https://raw.githubusercontent.com/s3rvxnt/UniversalUtilities/main/TempAkAdminFix",
         }
@@ -4065,8 +4098,8 @@ local function runAKPlusReload()
             chosenSrc = cachedSrc
         end
 
-        local lastShimLs = genv._AKLastShimLs
-        local tp = (type(genv._AKTruePrims) == "table" and genv._AKTruePrims.dm == game) and genv._AKTruePrims or nil
+        local lastShimLs = genv._RbxUILastShimLs
+        local tp = (type(genv._RbxUITruePrims) == "table" and genv._RbxUITruePrims.dm == game) and genv._RbxUITruePrims or nil
         local dInfo = (type(debug) == "table" and type(debug.info) == "function") and debug.info or nil
         local function pickLs(...)
             local n = select("#", ...)
@@ -4097,7 +4130,7 @@ local function runAKPlusReload()
         end
         local ls = pickLs(
             tp and tp.ls or nil,
-            genv._AKShimDataModel == game and genv._AKOrigLs or nil,
+            genv._RbxUIShimDataModel == game and genv._RbxUIOrigLs or nil,
             loadstring ~= lastShimLs and loadstring or nil,
             genv.loadstring ~= lastShimLs and genv.loadstring or nil,
             loadstring,
@@ -4106,13 +4139,13 @@ local function runAKPlusReload()
         if chosenSrc and ls then
             local okC, fn = pcall(ls, chosenSrc)
             if okC and type(fn) == "function" then
-                genv._AKForceReload = true
+                genv._RbxUIForceReload = true
                 pcall(fn)
             end
         end
     end)
 end
-genv._AKTriggerReload = runAKPlusReload
+genv._RbxUITriggerReload = runAKPlusReload
 
 local function patchRejoinCommandHooks()
     local ak = genv.AKUI
@@ -4122,14 +4155,14 @@ local function patchRejoinCommandHooks()
         if type(cmds) ~= "table" then return end
         for _, rjKey in ipairs({ "!rj", "!rejoin", "!serverhop" }) do
             local curFn = cmds[rjKey]
-            if type(curFn) == "function" and curFn ~= genv["_AKWrapped_" .. rjKey] then
-                genv["_AKOrigCmd_" .. rjKey] = curFn
+            if type(curFn) == "function" and curFn ~= genv["_RbxUIWrapped_" .. rjKey] then
+                genv["_RbxUIOrigCmd_" .. rjKey] = curFn
                 local origRj = curFn
                 local wrappedRj = function(...)
                     rearmTeleportBeforeHop()
                     return origRj(...)
                 end
-                genv["_AKWrapped_" .. rjKey] = wrappedRj
+                genv["_RbxUIWrapped_" .. rjKey] = wrappedRj
                 cmds[rjKey] = wrappedRj
             end
         end
@@ -4173,7 +4206,7 @@ local function enforceFpsSettings()
     end
     if type(genv.getfpscap) == "function" and type(genv.setfpscap) == "function" then
         local isXeno = (type(shared) == "table" and type(shared.__Xeno) == "table")
-            or (tostring(genv._AKExecName or ""):lower():find("xeno", 1, true) ~= nil)
+            or (tostring(genv._RbxUIExecName or ""):lower():find("xeno", 1, true) ~= nil)
         local hasUserLowCap = type(ak) == "table"
             and type(ak.prefs) == "table"
             and ak.prefs.fpsUnlimited == false
@@ -4192,30 +4225,30 @@ end
 local function hookAndApplyAll()
     local ak = genv.AKUI
     if type(ak) == "table" then
-        if type(genv._AKPatchTranslator) == "function" then
-            pcall(genv._AKPatchTranslator, ak)
+        if type(genv._RbxUIPatchTranslator) == "function" then
+            pcall(genv._RbxUIPatchTranslator, ak)
         end
 
-        if type(ak.reanimRun) == "function" and ak.reanimRun ~= genv._AKWrappedReanimRun then
-            genv._AKOrigReanimRun = ak.reanimRun
+        if type(ak.reanimRun) == "function" and ak.reanimRun ~= genv._RbxUIWrappedReanimRun then
+            genv._RbxUIOrigReanimRun = ak.reanimRun
             local origRun = ak.reanimRun
             local wrappedRun = function(...)
                 local r = origRun(...)
                 task.defer(patchAKReanimSession)
                 return r
             end
-            genv._AKWrappedReanimRun = wrappedRun
+            genv._RbxUIWrappedReanimRun = wrappedRun
             ak.reanimRun = wrappedRun
         end
 
         -- Scoped CoreGui scan accelerator for !antivcban (vcRun / vcBuild)
         for _, vcKey in ipairs({ "vcRun", "vcBuild" }) do
-            if type(ak[vcKey]) == "function" and ak[vcKey] ~= genv["_AKWrapped_" .. vcKey] then
-                genv["_AKOrig_" .. vcKey] = ak[vcKey]
+            if type(ak[vcKey]) == "function" and ak[vcKey] ~= genv["_RbxUIWrapped_" .. vcKey] then
+                genv["_RbxUIOrig_" .. vcKey] = ak[vcKey]
                 local origVcFn = ak[vcKey]
                 local wrappedVcFn = function(...)
                     local th = coroutine and coroutine.running and coroutine.running() or nil
-                    local vct = genv._AKVcThreads
+                    local vct = genv._RbxUIVcThreads
                     if th and type(vct) == "table" then
                         vct[th] = true
                     end
@@ -4228,24 +4261,24 @@ local function hookAndApplyAll()
                     end
                     return r1, r2, r3
                 end
-                genv["_AKWrapped_" .. vcKey] = wrappedVcFn
+                genv["_RbxUIWrapped_" .. vcKey] = wrappedVcFn
                 ak[vcKey] = wrappedVcFn
             end
         end
 
         -- Hook AKUI.reexecGo so clicking Re-execute reloads AKPlus instead of vanilla AK Admin
-        if type(ak.reexecGo) == "function" and ak.reexecGo ~= genv._AKWrappedReexecGo then
-            genv._AKOrigReexecGo = ak.reexecGo
+        if type(ak.reexecGo) == "function" and ak.reexecGo ~= genv._RbxUIWrappedReexecGo then
+            genv._RbxUIOrigReexecGo = ak.reexecGo
             local wrappedReexec = function()
                 runAKPlusReload()
             end
-            genv._AKWrappedReexecGo = wrappedReexec
+            genv._RbxUIWrappedReexecGo = wrappedReexec
             ak.reexecGo = wrappedReexec
         end
 
         -- Hook any UI Rejoin buttons directly as well
         local gui = findGui("AKAdmin2")
-        if gui and not gui:GetAttribute("_AKPlusRejoinBtnsHooked") then
+        if gui and not gui:GetAttribute("_RbxUIPlusRejoinBtnsHooked") then
             local hookedAny = false
             for _, d in ipairs(gui:GetDescendants()) do
                 if d:IsA("TextButton") and (d.Text == "Rejoin" or d.Text == "Server Hop") then
@@ -4256,13 +4289,13 @@ local function hookAndApplyAll()
                 end
             end
             if hookedAny then
-                gui:SetAttribute("_AKPlusRejoinBtnsHooked", true)
+                gui:SetAttribute("_RbxUIPlusRejoinBtnsHooked", true)
             end
         end
 
         if gui and (ak.initDone or (gui:FindFirstChild("!jump", true) and not findGui("AKAuthGui"))) then
-            if type(genv._AKD) == "function" then
-                pcall(genv._AKD)
+            if type(genv._RbxUID) == "function" then
+                pcall(genv._RbxUID)
             end
         end
     end
@@ -4271,7 +4304,7 @@ local function hookAndApplyAll()
     patchRejoinCommandHooks()
 end
 
-genv._AKOnStage3Done = function()
+genv._RbxUIOnStage3Done = function()
     hookAndApplyAll()
     if task and task.delay then
         task.delay(0.5, hookAndApplyAll)
@@ -4320,11 +4353,11 @@ do
     end
 end
 
-genv._AKReanimBoosterUnload = function()
+genv._RbxUIReanimBoosterUnload = function()
     pcall(function()
         local g2 = findGui("AKAdmin2")
         if g2 then
-            g2:SetAttribute("_AKPlusRejoinBtnsHooked", nil)
+            g2:SetAttribute("_RbxUIPlusRejoinBtnsHooked", nil)
         end
     end)
     for i = 1, #activeConns do
@@ -4333,22 +4366,22 @@ genv._AKReanimBoosterUnload = function()
     table.clear(activeConns)
     local ak = genv.AKUI
     if type(ak) == "table" then
-        if genv._AKOrigReanimRun then
-            ak.reanimRun = genv._AKOrigReanimRun
+        if genv._RbxUIOrigReanimRun then
+            ak.reanimRun = genv._RbxUIOrigReanimRun
         end
-        if genv._AKOrig_vcRun then
-            ak.vcRun = genv._AKOrig_vcRun
+        if genv._RbxUIOrig_vcRun then
+            ak.vcRun = genv._RbxUIOrig_vcRun
         end
-        if genv._AKOrig_vcBuild then
-            ak.vcBuild = genv._AKOrig_vcBuild
+        if genv._RbxUIOrig_vcBuild then
+            ak.vcBuild = genv._RbxUIOrig_vcBuild
         end
-        if genv._AKOrigReexecGo then
-            ak.reexecGo = genv._AKOrigReexecGo
+        if genv._RbxUIOrigReexecGo then
+            ak.reexecGo = genv._RbxUIOrigReexecGo
         end
         if type(ak.builtInFns) == "table" then
             for _, rjKey in ipairs({ "!rj", "!rejoin", "!serverhop" }) do
-                if genv["_AKOrigCmd_" .. rjKey] then
-                    ak.builtInFns[rjKey] = genv["_AKOrigCmd_" .. rjKey]
+                if genv["_RbxUIOrigCmd_" .. rjKey] then
+                    ak.builtInFns[rjKey] = genv["_RbxUIOrigCmd_" .. rjKey]
                 end
             end
         end
