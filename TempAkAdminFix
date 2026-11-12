@@ -3431,30 +3431,14 @@ end)
                 src = "local _RbxUIY,_RbxUIP,_akc=(getgenv and getgenv()._RbxUIY)or _RbxUIY,(getgenv and getgenv()._RbxUIP)or _RbxUIP,0;" .. src
                     :gsub("for (%w+)=1,#(%w+),5 do ", "for %1=1,#%2,5 do if %1%%200==1 then _RbxUIY(256)end;", 1)
                     :gsub("while (%w+)%+39<=(%w+) do local ", "while %1+39<=%2 do if %1%%4000==1 then _RbxUIY(512)end;local ", 1)
-                    :gsub("while (%w+) do if %1<=([%w_]+)", "while %1 do _akc+=1;if _akc>=64 then _akc=0;_RbxUIY(64)end;if %1<=%2")
-                    :gsub("while true do if (%w+<=%d+) then ", "while true do _akc+=1;if _akc>=64 then _akc=0;_RbxUIY(64)end;if %1 then ")
                     :gsub("while (%w+)%[(%d+)%]do (%w+)%[(%d+)%]%((%w+),(%w+),%.%.%.%)end;", "while %1[%2]do _akc+=1;if _akc>=64 then _akc=0;_RbxUIY(64)end;%3[%4](%5,%6,...)end;")
-                    :gsub("else U%[90%]=U%[45%]U%[0%]=14386203;end;", "else _akc+=1;if _akc>=64 then _akc=0;_RbxUIY(64)end;U[90]=U[45]U[0]=14386203;end;", 1)
                     :gsub(
                         "for (%w+)=1,(%w+) do local (%w+)=([%w_%[%]%.]+)%((%w+),(%w+)%)",
                         "for %1=1,%2 do _akc+=1;if _akc>=64 then _akc=0;_RbxUIY(64)end;local %3=%4(%5,%6)"
                     )
                     :gsub(
-                        "for (%w+)=(%w+),(%w+)%-1,4 do ",
-                        "for %1=%2,%3-1,4 do _akc+=1;if _akc>=256 then _akc=0;_RbxUIY(256)end;"
-                    )
-                    :gsub(
                         "if (%w+==%d+) then while true do local ",
                         "if %1 then while true do _akc+=1;if _akc>=64 then _akc=0;_RbxUIY(64)end;local "
-                    )
-                    :gsub(
-                        "while true do F%[7295896%]=W;",
-                        "while true do _akc+=1;if _akc>=64 then _akc=0;_RbxUIY(64)end;F[7295896]=W;"
-                    )
-                    :gsub(
-                        "elseif h==58 then K%[W%[U%]%]=K%[z%[U%]%]%+K%[o%[U%]%]U%+=1;",
-                        "elseif h==58 then K[W[U]]=K[z[U]]+(_RbxUIP[K[o[U]]]or K[o[U]])U+=1;",
-                        1
                     )
                 if canYield then
                     maybeYield(isStage3)
