@@ -1,16 +1,18 @@
 -- ============================================================================
--- AKPlus: UNIVERSAL EXECUTOR SHIM & DYNAMIC ANTI-FREEZE GOVERNOR (v8.2.9)
--- AKPlusBuild:829
+-- AKPlus: UNIVERSAL EXECUTOR SHIM & DYNAMIC ANTI-FREEZE GOVERNOR (v8.3.1)
+-- AKPlusBuild:831
 -- Fixes mobile/sandboxed/desktop executors (Delta, Codex, Vega X, Hydrogen,
 -- Solara, Xeno, Madium, Helios, Potassium, Volt, etc.) + OmniTaskManager-aware
 -- dynamic frame-budget & auto-stride governor + sub-command VM cache + English
 -- trHook fast-bypass + scoped !antivcban + auto-load-aware rejoin persistence.
 -- ============================================================================
+local _akForceReload = false
 do
     local _gGuard = (getgenv and getgenv()) or _G
     local _forceReload = _gGuard._AKForceReload
     _gGuard._AKForceReload = nil
-    if not _forceReload
+    _akForceReload = (_forceReload == true)
+    if not _akForceReload
         and _gGuard._AKPlusLoadingDM == game
         and type(_gGuard._AKPlusLoadingStart) == "number"
         and (os.clock() - _gGuard._AKPlusLoadingStart) < 45
@@ -20,7 +22,7 @@ do
 end
 
 do
-    local AKPLUS_BUILD = 829
+    local AKPLUS_BUILD = 831
     local callerEnv = getfenv and getfenv(1) or nil
     local origEnv = getfenv and getfenv(0) or _G
     local g = (getgenv and getgenv()) or _G
@@ -60,6 +62,35 @@ do
             g[k] = nil
             if _G then _G[k] = nil end
         end
+    end
+
+    if _akForceReload then
+        if type(g._AKReanimBoosterUnload) == "function" then
+            pcall(g._AKReanimBoosterUnload)
+        end
+        if type(g._AKDestroyStatusPill) == "function" then
+            pcall(g._AKDestroyStatusPill)
+        end
+        for _, guiName in ipairs({ "AKAdmin2", "AKAuthGui" }) do
+            local oldGui = findGui(guiName)
+            if oldGui then
+                pcall(function() oldGui:Destroy() end)
+            end
+        end
+        g._AKSubCache = nil
+        g._AKSubCacheOrder = nil
+        g._AKSubCacheSeq = 0
+        g._AKSubCacheHits = 0
+        g._AKWrappedTrHook = nil
+        g._AKWrappedTrLive = nil
+        g._AKWrappedReanimRun = nil
+        g._AKWrappedReexecGo = nil
+        g._AKWrapped_vcRun = nil
+        g._AKWrapped_vcBuild = nil
+        g["_AKWrapped_!rj"] = nil
+        g["_AKWrapped_!rejoin"] = nil
+        g["_AKWrapped_!serverhop"] = nil
+        wipeStaleAkGlobals()
     end
 
     local isNewDataModel = (g._AKShimDataModel ~= nil and g._AKShimDataModel ~= game)
@@ -629,6 +660,18 @@ do
     local lastUiCheck = 0
     local curStage = "[1/6] Init"
     local hasError = false
+    local s3Done = false
+    local s3DoneAt = 0
+    local finalPillShown = false
+    local uiBuildingNative = false
+    local lastWatchdogScan = 0
+
+    local function activeS3Budget()
+        if uiBuildingNative and not s3Done then
+            return math.max(dynBudget, 0.018)
+        end
+        return dynBudget
+    end
 
     local function fmtCount(n)
         if n >= 1000000 then
@@ -649,19 +692,23 @@ do
     local lastFillScale = nil
 
     local function computeRawPct()
-        if g.AKUI and g.AKUI.initDone then
+        if s3Done or (g.AKUI and g.AKUI.initDone) then
             maxRawPct = 100
             return 100
         end
         local raw = 0
         if uiCount > 0 then
-            local expected = 3550
+            local pCount = #Players:GetPlayers()
+            local expected = 6850 + math.max(0, pCount - 1) * 45
             if uiCount >= expected then
-                expected = uiCount + 35
+                expected = uiCount + 150
             end
-            raw = 14 + math.clamp(uiCount / expected, 0, 0.99) * 85
-            if uiPhase == "Macros" and raw < 97 then
-                raw = 97
+            raw = 14 + math.clamp(uiCount / expected, 0, 0.99) * 84
+            if akKeyCount >= 100 then
+                local akPct = 14 + math.clamp((akKeyCount - 180) / 860, 0, 0.99) * 84
+                if akPct > raw then
+                    raw = akPct
+                end
             end
         elseif authLatched then
             raw = math.clamp(4 + (yieldTotal - latchYield) * 1.2, 4, 14)
@@ -706,22 +753,54 @@ do
             return
         end
 
-        local card
-        for _, ch in ipairs(ag:GetChildren()) do
-            if ch:IsA("Frame") and ch.Size.X.Scale < 0.9 and ch.Size.Y.Scale < 0.9
-                and (ch.Size.X.Offset >= 300 or ch.AbsoluteSize.X >= 300) then
-                card = ch
-                break
+        local card = (authCard and authCard.Parent == ag) and authCard or nil
+        if not card then
+            for _, ch in ipairs(ag:GetChildren()) do
+                if ch:IsA("Frame") and ch.Size.X.Scale < 0.9 and ch.Size.Y.Scale < 0.9
+                    and (ch.Size.X.Offset >= 300 or ch.AbsoluteSize.X >= 300) then
+                    card = ch
+                    break
+                end
             end
         end
         if not card then return end
+
+        local hasAbs = (card.AbsoluteSize.X > 10 and card.AbsoluteSize.Y > 10)
+        local isMorphing = false
+        for _, ch in ipairs(card:GetChildren()) do
+            if ch:IsA("Frame") and (tonumber(ch.ZIndex) or 1) >= 500 and ch.Visible
+                and ch.Size.X.Scale >= 0.9 and ch.Size.Y.Scale >= 0.9
+                and (tonumber(ch.BackgroundTransparency) or 1) < 0.98 then
+                isMorphing = true
+                break
+            end
+        end
+        if not isMorphing and authLatched and (s3Done or (g.AKUI and g.AKUI.initDone)) then
+            if (card.Size.X.Offset > 0 and card.Size.X.Offset < 350)
+                or (card.Size.Y.Offset > 0 and card.Size.Y.Offset < 185)
+                or (hasAbs and card.AbsoluteSize.X < 340) then
+                isMorphing = true
+            end
+        end
+        if isMorphing then
+            if statusFrame and not hasError then
+                statusFrame.Visible = false
+            end
+            for _, nm in ipairs({ "_AKPct", "_AKDbg", "_AKDbg2" }) do
+                local ov = card:FindFirstChild(nm)
+                if ov and (ov:IsA("TextLabel") or ov:IsA("GuiObject")) then
+                    ov.Visible = false
+                end
+            end
+            return
+        end
+
         card.ClipsDescendants = true
 
         local cardTop = card.AbsolutePosition.Y
         local cardLeft = card.AbsolutePosition.X
         local cardW = math.max(card.AbsoluteSize.X, card.Size.X.Offset, 340)
         local cardH = math.max(card.AbsoluteSize.Y, card.Size.Y.Offset, 180)
-        local hasAbs = (card.AbsoluteSize.X > 10 and card.AbsoluteSize.Y > 10)
 
         local track
         for _, ch in ipairs(card:GetChildren()) do
@@ -951,6 +1030,7 @@ do
             authDbgLbl.Parent = card
         end
         authDbgLbl.ClipsDescendants = true
+        authDbgLbl.Visible = true
         authDbgLbl.TextTruncate = Enum.TextTruncate.AtEnd
         authDbgLbl.AnchorPoint = Vector2.new(0, 0)
         authDbgLbl.Position = UDim2.new(0, padX, track.Position.Y.Scale, trackBottomOffset + 4)
@@ -970,6 +1050,7 @@ do
             authDbgLbl2.Parent = card
         end
         authDbgLbl2.ClipsDescendants = true
+        authDbgLbl2.Visible = true
         authDbgLbl2.TextTruncate = Enum.TextTruncate.AtEnd
         authDbgLbl2.AnchorPoint = Vector2.new(0, 0)
         authDbgLbl2.Position = UDim2.new(0, padX, track.Position.Y.Scale, trackBottomOffset + 16)
@@ -983,7 +1064,7 @@ do
             or ((maxDt < 1.0) and Color3.fromRGB(255, 205, 90) or Color3.fromRGB(255, 105, 105))
         authDbgLbl.Text = string.format(
             "AKPlus [%s] %.1fs | %dFPS | Bdg:%.1fms | Lag:%.0fms(x%d)",
-            shortExec, now - t0, curFps, dynBudget * 1000, maxDt * 1000, spikeCount
+            shortExec, now - t0, curFps, activeS3Budget() * 1000, maxDt * 1000, spikeCount
         )
 
         authDbgLbl2.TextTransparency = lbl.TextTransparency
@@ -1141,6 +1222,7 @@ do
                             math.max(authStatusLbl.Size.Y.Offset, 16)
                         )
                     end
+                    authPctLbl.Visible = true
                     authPctLbl.TextTransparency = authStatusLbl.TextTransparency
                     authPctLbl.Text = string.format("%d%%", dispPct)
                 end
@@ -1188,6 +1270,10 @@ do
 
     local function updatePill(dt)
         local now = os.clock()
+        if not hasError and type(g.AKUI) == "table"
+            and (g.AKUI.trHook ~= g._AKWrappedTrHook or g.AKUI.trLiveCand ~= g._AKWrappedTrLive) then
+            pcall(patchAkTranslator, g.AKUI)
+        end
         if not hasError and (now - lastUiCheck > 0.035) then
             lastUiCheck = now
             pcall(function()
@@ -1207,6 +1293,8 @@ do
                     end
                 end
                 local ui = findGui("AKAdmin2")
+                local hasAuthNow = (findGui("AKAuthGui") ~= nil)
+                uiBuildingNative = (not s3Done and ui ~= nil and hasAuthNow)
                 if ui then
                     lastCheckpoint = "S3-UI"
                     local desc = ui:GetDescendants()
@@ -1262,7 +1350,7 @@ do
         statusLbl.Text = string.format("AKPlus [%s] | %s%s", execName, curStage, pctStr)
         subLbl.Text = string.format(
             "%.1fs | %dFPS | Bdg:%.1fms | Lag:%.0fms(x%d) | Yld:%d | VM:%s",
-            now - t0, curFps, dynBudget * 1000, maxDt * 1000, spikeCount, yieldTotal, fmtCount(yCount)
+            now - t0, curFps, activeS3Budget() * 1000, maxDt * 1000, spikeCount, yieldTotal, fmtCount(yCount)
         )
         if not hasError then
             subLbl.TextColor3 = (maxDt < 0.250) and Color3.fromRGB(130, 235, 170)
@@ -1271,7 +1359,6 @@ do
     end
 
     local s3Thread = nil
-    local s3Done = false
     local s3Loaded = false
     local s3Start = os.clock()
     local lastCheck = 0
@@ -1318,12 +1405,45 @@ do
     end
     g._AKDestroyStatusPill = destroyAllStatusGuis
 
+    local setStatus
+
+    local function showLoadedPillAndCleanup()
+        if finalPillShown or pillDismissed then return end
+        finalPillShown = true
+        if hbConn then
+            pcall(function() hbConn:Disconnect() end)
+            hbConn = nil
+        end
+        if not hasError and statusGui and statusFrame then
+            statusFrame.Position = UDim2.new(0.5, -230, 0, 64)
+            statusFrame.Visible = true
+            allowFinalStatus = true
+            setStatus("[6/6] Loaded!")
+            allowFinalStatus = false
+        end
+        local cleanupFn = function()
+            if not hasError then
+                destroyAllStatusGuis()
+            end
+        end
+        if task and task.delay then
+            task.delay(2.0, cleanupFn)
+        end
+        task.spawn(function()
+            local w = g._KernelOrigTaskWait or rawTaskWait or (task and task.wait)
+            if w then pcall(w, 2.2) end
+            cleanupFn()
+        end)
+    end
+
     local function checkPillWatchdog(now)
         if hasError or s3Done then return end
         if g.AKUI and g.AKUI.initDone then
             if g._AKD then g._AKD() end
             return
         end
+        if (now - lastWatchdogScan) < 0.25 then return end
+        lastWatchdogScan = now
         local hasAuth = (findGui("AKAuthGui") ~= nil)
         local ui = findGui("AKAdmin2")
         if ui then
@@ -1378,7 +1498,7 @@ do
         end
     end
 
-    local function setStatus(txt)
+    setStatus = function(txt)
         if hasError or pillDismissed or (s3Done and not allowFinalStatus) then return end
         curStage = tostring(txt)
         pcall(function()
@@ -1450,7 +1570,11 @@ do
                     if dt > 0.100 then spikeCount = spikeCount + 1 end
                     curFps = math.clamp(math.floor(1 / math.max(dt, 0.0001) + 0.5), 1, 9999)
                     updatePill(dt)
-                    checkPillWatchdog(now)
+                    if not s3Done then
+                        checkPillWatchdog(now)
+                    elseif not finalPillShown and (findGui("AKAuthGui") == nil or (now - s3DoneAt) >= 5.0) then
+                        showLoadedPillAndCleanup()
+                    end
                 end)
             end
             updatePill(0.016)
@@ -1563,7 +1687,7 @@ do
         end
         local ref = s3Done and burstStart or lastY
         if ref <= 0 then ref = lastCheck end
-        local budget = s3Done and 0.024 or dynBudget
+        local budget = s3Done and 0.024 or activeS3Budget()
         if force or (ref <= 0) or (now - ref > budget) then
             local hadSlice = (ref > 0)
             local sliceStart = hadSlice and ref or now
@@ -1602,45 +1726,32 @@ do
 
     local function _AKD()
         if s3Done then
-            if not hasError then
-                destroyAllStatusGuis()
+            if not finalPillShown and findGui("AKAuthGui") == nil then
+                pcall(showLoadedPillAndCleanup)
             end
             return
         end
+        if not hasError and findGui("AKAuthGui") ~= nil and type(g.AKUI) == "table" and not g.AKUI.initDone then
+            return
+        end
         s3Done = true
+        uiBuildingNative = false
+        s3DoneAt = os.clock()
         g._AKPlusLoadingDM = nil
         g._AKPlusLoadingStart = nil
         pcall(function()
             maxRawPct = 100
             visPct = 100
             pcall(stepAuthHijack, 1)
-            if hbConn then hbConn:Disconnect(); hbConn = nil end
-            if statusGui and statusFrame then
-                statusFrame.Position = UDim2.new(0.5, -230, 0, 64)
-                statusFrame.Visible = true
-                allowFinalStatus = true
-                setStatus("[6/6] Loaded!")
-                allowFinalStatus = false
-            end
             if type(g._AKQueueTeleport) == "function" then
                 pcall(g._AKQueueTeleport, false)
             end
             if type(g._AKOnStage3Done) == "function" then
                 task.defer(g._AKOnStage3Done)
             end
-            local cleanupFn = function()
-                if not hasError then
-                    destroyAllStatusGuis()
-                end
+            if findGui("AKAuthGui") == nil then
+                showLoadedPillAndCleanup()
             end
-            if task and task.delay then
-                task.delay(2.0, cleanupFn)
-            end
-            task.spawn(function()
-                local w = g._KernelOrigTaskWait or rawTaskWait or (task and task.wait)
-                if w then pcall(w, 2.2) end
-                cleanupFn()
-            end)
         end)
     end
 
@@ -1682,7 +1793,7 @@ do
             if s3Thread and coroutine and coroutine.running and coroutine.running() ~= s3Thread then
                 return
             end
-            if now - lastY > dynBudget then
+            if now - lastY > activeS3Budget() then
                 if coroutine and coroutine.isyieldable and not coroutine.isyieldable() then
                     strideLeft = 16
                     return
@@ -2218,7 +2329,7 @@ do
 
     -- Multi-hop teleport persistence helper + scoped CoreGui proxy for fast vcRun/vcBuild scans
     local AKPLUS_TELEPORT_CODE = [[
--- AKPlusBuild:829
+-- AKPlusBuild:831
 local _g = (getgenv and getgenv()) or _G
 do
     local _isf = isfile or _g.isfile
@@ -3178,7 +3289,8 @@ end)
     end)
 
     local existingGui = findGui("AKAdmin2")
-    local alreadyLoaded = (type(g.AKUI) == "table" and existingGui and existingGui:FindFirstChild("!jump", true) ~= nil)
+    local alreadyLoaded = (not _akForceReload)
+        and (type(g.AKUI) == "table" and existingGui and existingGui:FindFirstChild("!jump", true) ~= nil)
     if alreadyLoaded then
         s3Loaded = true
         table.clear(subCache)
@@ -4148,14 +4260,9 @@ local function hookAndApplyAll()
             end
         end
 
-        if gui and (gui:FindFirstChild("!jump", true) or ak.initDone) then
+        if gui and (ak.initDone or (gui:FindFirstChild("!jump", true) and not findGui("AKAuthGui"))) then
             if type(genv._AKD) == "function" then
                 pcall(genv._AKD)
-            end
-            if task and task.delay and type(genv._AKDestroyStatusPill) == "function" then
-                task.delay(1.8, function()
-                    pcall(genv._AKDestroyStatusPill)
-                end)
             end
         end
     end
@@ -4174,7 +4281,8 @@ end
 
 do
     local gui = findGui("AKAdmin2")
-    if type(genv.AKUI) == "table" and gui and gui:FindFirstChild("!jump", true) then
+    if type(genv.AKUI) == "table" and gui
+        and (genv.AKUI.initDone or (gui:FindFirstChild("!jump", true) and not findGui("AKAuthGui"))) then
         hookAndApplyAll()
         if task and task.delay then
             task.delay(0.8, enforceFpsSettings)
@@ -4197,7 +4305,8 @@ do
             local deadline = os.clock() + 60
             while os.clock() < deadline do
                 local g2 = findGui("AKAdmin2")
-                if type(genv.AKUI) == "table" and g2 and g2:FindFirstChild("!jump", true) then
+                if type(genv.AKUI) == "table" and g2
+                    and (genv.AKUI.initDone or (g2:FindFirstChild("!jump", true) and not findGui("AKAuthGui"))) then
                     break
                 end
                 rawW(0.05)
