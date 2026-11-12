@@ -1,10 +1,10 @@
 -- ============================================================================
--- AKPlus: UNIVERSAL EXECUTOR SHIM & DYNAMIC ANTI-FREEZE GOVERNOR (v8.2.3)
--- AKPlusBuild:823
+-- AKPlus: UNIVERSAL EXECUTOR SHIM & DYNAMIC ANTI-FREEZE GOVERNOR (v8.2.9)
+-- AKPlusBuild:829
 -- Fixes mobile/sandboxed/desktop executors (Delta, Codex, Vega X, Hydrogen,
 -- Solara, Xeno, Madium, Helios, Potassium, Volt, etc.) + OmniTaskManager-aware
 -- dynamic frame-budget & auto-stride governor + sub-command VM cache + English
--- trHook fast-bypass + scoped !antivcban + FE !invis + multi-rejoin persistence.
+-- trHook fast-bypass + scoped !antivcban + auto-load-aware rejoin persistence.
 -- ============================================================================
 do
     local _gGuard = (getgenv and getgenv()) or _G
@@ -20,7 +20,7 @@ do
 end
 
 do
-    local AKPLUS_BUILD = 823
+    local AKPLUS_BUILD = 829
     local callerEnv = getfenv and getfenv(1) or nil
     local origEnv = getfenv and getfenv(0) or _G
     local g = (getgenv and getgenv()) or _G
@@ -90,6 +90,10 @@ do
     else
         g._AKShimDataModel = game
         g._AKPlusDataModel = game
+        local existingFullUi = findGui("AKAdmin2")
+        if not (existingFullUi and existingFullUi:FindFirstChild("!jump", true)) then
+            wipeStaleAkGlobals()
+        end
     end
 
     g._AKPlusLoadingDM = game
@@ -97,20 +101,44 @@ do
 
     local truePrims = (type(g._AKTruePrims) == "table" and g._AKTruePrims.dm == game) and g._AKTruePrims or nil
 
+    local ourShims = g._AKOurShims
+    if type(ourShims) ~= "table" then
+        ourShims = setmetatable({}, { __mode = "k" })
+        g._AKOurShims = ourShims
+    end
+    local function markOurShim(fn)
+        if type(fn) == "function" then
+            ourShims[fn] = true
+        end
+        return fn
+    end
+
     local rawDbgEarly = (type(debug) == "table" and debug) or g._AKOrigDbg
-    local rawDbgInfoEarly = (type(g._AKOrigDbgInf) == "function" and g._AKOrigDbgInf)
-        or (rawDbgEarly and type(rawDbgEarly.info) == "function" and rawDbgEarly.info)
+    local rawDbgInfoEarly = (type(g._AKOrigDbgInf) == "function" and not ourShims[g._AKOrigDbgInf] and g._AKOrigDbgInf)
+        or (rawDbgEarly and type(rawDbgEarly.info) == "function" and not ourShims[rawDbgEarly.info] and rawDbgEarly.info)
         or nil
+
+    local xenoSrcEarly = nil
+    if rawDbgInfoEarly then
+        local probeFn = (shared and type(shared.__Xeno) == "table" and shared.__Xeno.getgenv) or getgenv or g.getgenv
+        if type(probeFn) == "function" and not ourShims[probeFn] then
+            local okX, sX = pcall(rawDbgInfoEarly, probeFn, "s")
+            if okX and type(sX) == "string" and sX ~= "" and sX ~= "[C]" and not sX:find("loadstring:", 1, true) then
+                xenoSrcEarly = sX
+            end
+        end
+    end
 
     local function isNativeCFn(fn)
         if type(fn) ~= "function" then return false end
+        if ourShims[fn] then return false end
         if rawDbgInfoEarly then
             local ok, s = pcall(rawDbgInfoEarly, fn, "s")
             if ok and type(s) == "string" then
-                return s == "[C]"
+                return s == "[C]" or (xenoSrcEarly ~= nil and s == xenoSrcEarly)
             end
         end
-        if type(iscclosure) == "function" then
+        if type(iscclosure) == "function" and not ourShims[iscclosure] then
             local okI, rI = pcall(iscclosure, fn)
             if okI and type(rI) == "boolean" then
                 return rI
@@ -176,7 +204,7 @@ do
                     for j = 1, #uvs do
                         local u = uvs[j]
                         local v = u.val
-                        if type(v) == "function" then
+                        if type(v) == "function" and not ourShims[v] then
                             if isNativeCFn(v) and (not acceptFn or acceptFn(v, u.name)) then
                                 if preferNameFn and u.name ~= "" and preferNameFn(u.name) then
                                     return v
@@ -207,20 +235,20 @@ do
         if isNewDataModel then
             for i = 1, n do
                 local fn = select(i, ...)
-                if type(fn) == "function" and fn ~= lastShim then
+                if type(fn) == "function" and fn ~= lastShim and not ourShims[fn] then
                     cands[#cands + 1] = fn
                 end
             end
-            if type(prevOrig) == "function" and prevOrig ~= lastShim then
+            if type(prevOrig) == "function" and prevOrig ~= lastShim and not ourShims[prevOrig] then
                 cands[#cands + 1] = prevOrig
             end
         else
-            if type(prevOrig) == "function" and prevOrig ~= lastShim then
+            if type(prevOrig) == "function" and prevOrig ~= lastShim and not ourShims[prevOrig] then
                 cands[#cands + 1] = prevOrig
             end
             for i = 1, n do
                 local fn = select(i, ...)
-                if type(fn) == "function" and fn ~= lastShim then
+                if type(fn) == "function" and fn ~= lastShim and not ourShims[fn] then
                     cands[#cands + 1] = fn
                 end
             end
@@ -233,30 +261,89 @@ do
         return cands[1]
     end
 
-    local c = newcclosure or function(...) return ... end
+    local function wrapLuaCClosure(fn)
+        if type(fn) ~= "function" then return fn end
+        if ourShims[fn] then return fn end
+        return markOurShim(function(...)
+            return fn(...)
+        end)
+    end
+
+    local rawNewcc = resolvePrimFn(
+        g._AKOrigNewcclosure,
+        g._AKLastShimNewcclosure,
+        newcclosure,
+        g.newcclosure,
+        origEnv and rawget(origEnv, "newcclosure")
+    )
+    local c = wrapLuaCClosure
+    if type(rawNewcc) == "function" then
+        local callerTh = coroutine and coroutine.running and coroutine.running() or nil
+        local innerTh = nil
+        local okW, testWrapped = pcall(rawNewcc, function(x, y)
+            innerTh = coroutine and coroutine.running and coroutine.running() or nil
+            return x, y
+        end)
+        if okW and type(testWrapped) == "function" then
+            local ok1, r1a, r1b = pcall(testWrapped, 11, 12)
+            local ok2, r2a, r2b = pcall(testWrapped, 22, 23)
+            if ok1 and r1a == 11 and r1b == 12 and ok2 and r2a == 22 and r2b == 23 and innerTh == callerTh then
+                g._AKOrigNewcclosure = rawNewcc
+                c = function(fn)
+                    if type(fn) ~= "function" then return fn end
+                    local okC, resC = pcall(rawNewcc, fn)
+                    if okC and type(resC) == "function" then
+                        return markOurShim(resC)
+                    end
+                    return wrapLuaCClosure(fn)
+                end
+            end
+        end
+    end
+    if c == wrapLuaCClosure then
+        g._AKLastShimNewcclosure = wrapLuaCClosure
+        pcall(function() g.newcclosure = wrapLuaCClosure end)
+    end
+
     local function isWorkingLs(fn)
-        if type(fn) ~= "function" then return false end
+        if type(fn) ~= "function" or ourShims[fn] then return false end
         local ok1, compiled = pcall(fn, "return 1738")
         if not ok1 or type(compiled) ~= "function" then return false end
         local ok2, res = pcall(compiled)
         return ok2 and res == 1738
     end
 
+    local function hasShimLsUpvalue(fn)
+        if type(fn) ~= "function" then return false end
+        local uvs = collectUpvalues(fn)
+        for i = 1, #uvs do
+            local nm = uvs[i].name
+            if nm == "oldLs" or nm == "selfBindPrefix" or nm == "akLoadstring" then
+                return true
+            end
+        end
+        return false
+    end
+
+    local xenoRawLs = (shared and type(shared.__Xeno) == "table" and type(shared.__Xeno.loadstring) == "function")
+        and shared.__Xeno.loadstring or nil
     local oldLs = resolvePrimFn(
         g._AKOrigLs,
         g._AKLastShimLs,
         loadstring,
         g.loadstring,
+        xenoRawLs,
         origEnv and rawget(origEnv, "loadstring"),
         truePrims and truePrims.ls
     )
-    if not isNativeCFn(oldLs) or not isWorkingLs(oldLs) then
+    if not oldLs or ourShims[oldLs] or hasShimLsUpvalue(oldLs) or not isWorkingLs(oldLs) then
         local peeledLs = peelUpvalueCFn(
             {
                 oldLs,
                 g._AKOrigLs,
                 loadstring,
                 g.loadstring,
+                xenoRawLs,
                 origEnv and rawget(origEnv, "loadstring") or nil,
                 truePrims and truePrims.ls or nil,
             },
@@ -268,13 +355,38 @@ do
         )
         if peeledLs then
             oldLs = peeledLs
-        elseif not isWorkingLs(oldLs) then
-            if truePrims and isWorkingLs(truePrims.ls) then
-                oldLs = truePrims.ls
-            elseif isWorkingLs(loadstring) then
-                oldLs = loadstring
+        else
+            for _, candLs in ipairs({
+                truePrims and truePrims.ls or nil,
+                g._AKOrigLs,
+                xenoRawLs,
+                loadstring,
+                g.loadstring,
+            }) do
+                if type(candLs) == "function" and not ourShims[candLs] and isWorkingLs(candLs) then
+                    oldLs = candLs
+                    break
+                end
+            end
+            if not oldLs or (isNativeCFn(oldLs) and not isWorkingLs(oldLs)) then
+                if truePrims and type(truePrims.ls) == "function" and not ourShims[truePrims.ls] then
+                    oldLs = truePrims.ls
+                elseif type(xenoRawLs) == "function" and not ourShims[xenoRawLs] then
+                    oldLs = xenoRawLs
+                elseif type(loadstring) == "function" and not ourShims[loadstring] then
+                    oldLs = loadstring
+                end
             end
         end
+    end
+
+    local function isValidIscFn(fn)
+        if type(fn) ~= "function" or ourShims[fn] or fn == pcall or fn == type then
+            return false
+        end
+        local okA, rA = pcall(fn, pcall)
+        local okB, rB = pcall(fn, function() end)
+        return okA and rA == true and okB and rB == false
     end
 
     local origIsc = resolvePrimFn(
@@ -285,24 +397,18 @@ do
         origEnv and rawget(origEnv, "iscclosure"),
         truePrims and truePrims.isc
     )
-    if type(origIsc) == "function" then
-        local okProbe, probeRes = pcall(origIsc, pcall)
-        if not okProbe or probeRes ~= true then
-            local peeledIsc = peelUpvalueCFn(
-                { origIsc, g._AKOrigIsc, iscclosure, g.iscclosure },
-                function(v)
-                    if v == pcall or v == type then return false end
-                    local okA, rA = pcall(v, pcall)
-                    local okB, rB = pcall(v, function() end)
-                    return okA and rA == true and okB and rB == false
-                end,
-                function(nm) return nm:lower():find("isc", 1, true) ~= nil end
-            )
-            if peeledIsc then
-                origIsc = peeledIsc
-            elseif truePrims and type(truePrims.isc) == "function" then
-                origIsc = truePrims.isc
-            end
+    if type(origIsc) == "function" and not isValidIscFn(origIsc) then
+        local peeledIsc = peelUpvalueCFn(
+            { origIsc, g._AKOrigIsc, iscclosure, g.iscclosure },
+            isValidIscFn,
+            function(nm) return nm:lower():find("isc", 1, true) ~= nil end
+        )
+        if peeledIsc then
+            origIsc = peeledIsc
+        elseif truePrims and isValidIscFn(truePrims.isc) then
+            origIsc = truePrims.isc
+        else
+            origIsc = nil
         end
     end
     local rawDbg = (isNewDataModel and type(debug) == "table" and debug ~= g._AKLastShimDbg and debug)
@@ -346,38 +452,90 @@ do
     g._AKOrigSetFpsCap = rawSetFpsCap
     g._AKOrigGetFpsCap = rawGetFpsCap
 
+    local rawIdentifyExec = resolvePrimFn(
+        g._AKOrigIdentifyExec,
+        g._AKLastShimIdentifyExec,
+        identifyexecutor,
+        g.identifyexecutor,
+        origEnv and rawget(origEnv, "identifyexecutor")
+    )
+    local rawGetExecName = resolvePrimFn(
+        g._AKOrigGetExecName,
+        g._AKLastShimGetExecName,
+        getexecutorname,
+        g.getexecutorname,
+        origEnv and rawget(origEnv, "getexecutorname")
+    )
+    g._AKOrigIdentifyExec = rawIdentifyExec
+    g._AKOrigGetExecName = rawGetExecName
+
+    local execName = "Unknown"
+    pcall(function()
+        if rawIdentifyExec then
+            execName = tostring((rawIdentifyExec()))
+        elseif rawGetExecName then
+            execName = tostring((rawGetExecName()))
+        end
+    end)
+
     local safeSetFpsCap = nil
+    local normExecName = execName:lower():gsub("%s+", "")
+    local isXenoExec = (xenoSrcEarly ~= nil) or (normExecName:find("xeno", 1, true) ~= nil)
+    local needExecSpoof = isXenoExec or (normExecName:find("solara", 1, true) ~= nil)
+    local spoofIdentifyExec = needExecSpoof and c(function()
+        return "Potassium", "1.8.0"
+    end) or nil
+    local spoofGetExecName = needExecSpoof and c(function()
+        return "Potassium"
+    end) or nil
+    if needExecSpoof then
+        g._AKLastShimIdentifyExec = spoofIdentifyExec
+        g._AKLastShimGetExecName = spoofGetExecName
+    end
     if type(rawSetFpsCap) == "function" then
         safeSetFpsCap = c(function(cap)
             local n = tonumber(cap)
-            if n and (n == 0 or n > 2147483647) then
+            if n and (n <= 0 or n >= 999) then
+                local fallbackCap = (n >= 999 and n <= 2147483647) and n or 9999
+                if isXenoExec then
+                    local okX, resX = pcall(rawSetFpsCap, fallbackCap)
+                    return okX and resX or nil
+                end
                 local ok0, res0 = pcall(rawSetFpsCap, 0)
                 if type(rawGetFpsCap) == "function" then
                     local okG, cur = pcall(rawGetFpsCap)
-                    if okG and type(cur) == "number" and cur > 0 and cur <= 60 then
-                        pcall(rawSetFpsCap, 999999)
+                    if okG and type(cur) == "number" and (cur < 0 or (cur > 0 and cur <= 60) or cur >= 1e9) then
+                        local okF, resF = pcall(rawSetFpsCap, fallbackCap)
+                        return okF and resF or nil
                     end
+                elseif n >= 999 and n <= 2147483647 then
+                    local okF, resF = pcall(rawSetFpsCap, fallbackCap)
+                    return okF and resF or nil
                 end
                 return ok0 and res0 or nil
             end
-            local okN, resN = pcall(rawSetFpsCap, cap)
+            local okN, resN = pcall(rawSetFpsCap, n or cap)
             return okN and resN or nil
         end)
         g._AKLastShimSetFpsCap = safeSetFpsCap
         pcall(function() g.setfpscap = safeSetFpsCap end)
+        if isXenoExec then
+            pcall(function()
+                local ak = g.AKUI
+                local hasUserLowCap = type(ak) == "table"
+                    and type(ak.prefs) == "table"
+                    and ak.prefs.fpsUnlimited == false
+                    and type(ak.prefs.fpsCap) == "number"
+                    and ak.prefs.fpsCap <= 240
+                if not hasUserLowCap then
+                    rawSetFpsCap(9999)
+                end
+            end)
+        end
     end
     if rawGetFpsCap and g.getfpscap == nil then
         pcall(function() g.getfpscap = rawGetFpsCap end)
     end
-
-    local execName = "Unknown"
-    pcall(function()
-        if identifyexecutor then
-            execName = tostring((identifyexecutor()))
-        elseif getexecutorname then
-            execName = tostring((getexecutorname()))
-        end
-    end)
 
     -- Window focus tracking + per-frame boundary counter + OmniTaskManager unthrottled C-yield bypass
     local isFocused = true
@@ -399,7 +557,7 @@ do
         end
         local c1 = UserInputService.WindowFocused:Connect(function()
             isFocused = true
-            if dynBudget > 0.0145 then
+            if dynBudget > 0.0115 then
                 dynBudget = 0.008
             end
         end)
@@ -443,12 +601,12 @@ do
         end
         if totalDt > 0.095 then
             dynBudget = math.max(dynBudget * 0.65, 0.006)
-        elseif totalDt <= 0.0188 then
-            dynBudget = math.min(dynBudget + 0.0016, 0.0145)
-        elseif totalDt <= 0.025 then
-            dynBudget = math.clamp(dynBudget + (0.0215 - totalDt) * 0.25, 0.0085, 0.0140)
+        elseif totalDt <= 0.0165 then
+            dynBudget = math.min(dynBudget + 0.0012, 0.0115)
+        elseif totalDt <= 0.022 then
+            dynBudget = math.clamp(dynBudget + (0.0195 - totalDt) * 0.25, 0.0075, 0.0110)
         else
-            dynBudget = math.clamp(dynBudget * 0.85, 0.006, 0.0125)
+            dynBudget = math.clamp(dynBudget * 0.85, 0.006, 0.0105)
         end
     end
 
@@ -1215,7 +1373,7 @@ do
         else
             uiReadySince = 0
         end
-        if s3Loaded and not hasAuth and (now - s3Start) >= 28.0 then
+        if s3Loaded and (authLatched or ui ~= nil) and not hasAuth and (now - s3Start) >= 28.0 then
             if g._AKD then g._AKD() end
         end
     end
@@ -1500,7 +1658,8 @@ do
     end
 
     local function _AKY(step)
-        if s3Done and subDepth <= 0 then return end
+        local isMainS3Running = (s3Thread ~= nil and coroutine and coroutine.running and coroutine.running() == s3Thread and lastCheckpoint == "S3-VMInit")
+        if s3Done and subDepth <= 0 and not isMainS3Running then return end
         local n = step or 1
         yCount = yCount + n
         strideLeft = strideLeft - n
@@ -1510,13 +1669,13 @@ do
         local sliceDt = now - lastStrideClock
         lastStrideClock = now
         if sliceDt > 0.0012 then
-            dynStride = math.clamp(math.floor(dynStride * (0.0006 / sliceDt)), 64, 1024)
+            dynStride = math.clamp(math.floor(dynStride * (0.0006 / sliceDt)), 64, 2048)
         elseif sliceDt < 0.0003 and sliceDt >= 0 then
-            dynStride = math.min(dynStride * 2, 1024)
+            dynStride = math.min(dynStride * 2, 2048)
         end
         strideLeft = dynStride
 
-        if not s3Done then
+        if not s3Done or isMainS3Running then
             if not s3Thread and coroutine and coroutine.running then
                 s3Thread = coroutine.running()
             end
@@ -1529,7 +1688,7 @@ do
                     return
                 end
                 yieldTotal = yieldTotal + 1
-                if yieldTotal % 8 == 0 then
+                if not s3Done and yieldTotal % 8 == 0 then
                     local hasUi = findGui("AKAdmin2") ~= nil
                     setStatus(hasUi and "[6/6] Building UI..." or "[5/6] Running VM...")
                 end
@@ -1545,7 +1704,9 @@ do
                     burstStart = after
                     burstFrameId = curFrameId
                     lastStrideClock = after
-                    checkPillWatchdog(after)
+                    if not s3Done then
+                        checkPillWatchdog(after)
+                    end
                 end
             end
         else
@@ -1633,6 +1794,7 @@ do
             [table.pack or 0]=true, [math.floor]=true, [rawget]=true, [rawset]=true,
             [oldLs or 0]=true, [origIsc or 0]=true, [buffer and buffer.readu8 or 0]=true,
             [g.checkcaller]=true, [getgenvFn]=true, [safeSetFpsCap or 0]=true,
+            [g.newcclosure or 0]=true, [spoofIdentifyExec or 0]=true, [spoofGetExecName or 0]=true,
             [_AKS]=true, [_AKY]=true, [_AKD]=true
         }
         isC[0] = nil
@@ -1641,35 +1803,108 @@ do
         local function checkIsC(f)
             if type(f) ~= "function" then return false end
             if isC[f] then return true end
+            if ourShims[f] then return true end
             if inf then
                 local ok, s = pcall(inf, f, "s")
-                if ok and s == "[C]" then return true end
+                if ok and type(s) == "string" and (s == "[C]" or (xenoSrcEarly ~= nil and s == xenoSrcEarly)) then
+                    return true
+                end
             end
             if origIsc and not inIsc then
                 inIsc = true
                 local ok, r = pcall(origIsc, f)
                 inIsc = false
-                if ok and r then return true end
+                if ok and type(r) == "boolean" then return r end
+            end
+            if setfenv and getfenv then
+                local okF, envF = pcall(getfenv, f)
+                if okF then
+                    return not pcall(setfenv, f, envF)
+                end
             end
             return false
         end
 
         local off = 1
+        local cSharesStack = false
         if inf then
             local probe, testCaller
             probe = c(function(...)
-                for k = 1, 4 do
-                    if inf(k, "f") == testCaller then return k - 1 end
+                for k = 1, 6 do
+                    local okK, fk = pcall(inf, k, "f")
+                    if okK and fk == testCaller then return k - 1 end
                 end
-                return 1
+                return nil
             end)
             testCaller = function() return probe() end
             local ok, v = pcall(testCaller)
-            if ok and type(v) == "number" then off = v end
+            if ok and type(v) == "number" then
+                off = v
+                cSharesStack = true
+            end
         end
 
         local dbg = {}
         for k, v in pairs(rawDbg) do dbg[k] = v end
+
+        local hasFakeDbgStubs = (xenoSrcEarly ~= nil)
+        if not hasFakeDbgStubs and type(rawDbg.getconstant) == "function" then
+            local okFc, fc1 = pcall(rawDbg.getconstant, function() return 98765 end, 1)
+            if okFc and fc1 == "print" then
+                hasFakeDbgStubs = true
+            end
+        end
+        if hasFakeDbgStubs then
+            for _, fk in ipairs({
+                "getconstant", "getconstants", "getproto", "getprotos",
+                "getstack", "getupvalue", "getupvalues",
+                "setconstant", "setstack", "setupvalue"
+            }) do
+                dbg[fk] = nil
+                pcall(function() rawDbg[fk] = nil end)
+            end
+        end
+
+        local function normalizeChunkSrc(s)
+            if type(s) ~= "string" or s == "" or s == "[C]" then
+                return '[string "chunk"]'
+            end
+            if xenoSrcEarly ~= nil and s == xenoSrcEarly then
+                return '[string "chunk"]'
+            end
+            return s
+        end
+
+        local errThrowLvl = 3
+        local function packCall(okE, ...)
+            return okE, select("#", ...), { ... }
+        end
+        local function throwAtCaller(...)
+            if inf then
+                local okE, nR, vals = packCall(pcall(inf, ...))
+                if not okE then
+                    local sErr = tostring(vals[1])
+                    local cleanErr = sErr:match("^.+:%d+:%s*(.+)$") or sErr
+                    error(cleanErr, errThrowLvl)
+                end
+                return (unpack or table.unpack)(vals, 1, nR)
+            end
+            error("invalid option", errThrowLvl)
+        end
+        if inf then
+            for tryLvl = 1, 8 do
+                errThrowLvl = tryLvl
+                local errProbe = c(function(...) return throwAtCaller(...) end)
+                local callerLine = nil
+                local callerFn = function() callerLine = inf(1, "l"); return errProbe(1, "aa") end
+                local _, probeErr = pcall(callerFn)
+                if type(probeErr) == "string" and callerLine and probeErr:find(":" .. tostring(callerLine) .. ":", 1, true) then
+                    break
+                end
+            end
+        end
+
+        local giIsNative = isNativeCFn(gi)
 
         dbg.getinfo = c(function(...)
             local f, w = ...
@@ -1689,6 +1924,23 @@ do
             if type(f) == "number" and f < 0 then
                 return nil
             end
+            if type(f) == "number" and not cSharesStack then
+                if f > 2 then
+                    return nil
+                end
+                return {
+                    what = "Lua",
+                    source = '=[string "chunk"]',
+                    short_src = '[string "chunk"]',
+                    linedefined = 1,
+                    currentline = 1,
+                    name = "",
+                    nups = 0,
+                    numparams = 0,
+                    is_vararg = 0,
+                    func = (f <= 1 and dFn1 or dFn2),
+                }
+            end
             local target = type(f) == "number" and (f == 0 and 0 or f + off) or f
             if type(f) == "number" and f > 2 then
                 if inf then
@@ -1699,23 +1951,51 @@ do
                     return nil
                 end
             end
-            local ok, r = pcall(gi or function() end, target, w)
-            if type(f) == "number" and f > 2 and gi then
-                if not ok or r == nil then return nil end
+            local r
+            if not giIsNative and inf then
+                local okI, sI, lI, nI, aI, vI, fI = pcall(inf, target, "slnaf")
+                if not okI or (type(f) == "number" and f > 2 and sI == nil) then
+                    return nil
+                end
+                local normS = normalizeChunkSrc(sI)
+                r = {
+                    what = (sI == "[C]") and "C" or "Lua",
+                    source = "=" .. normS,
+                    short_src = normS,
+                    linedefined = 1,
+                    currentline = 1,
+                    name = type(nI) == "string" and nI or "",
+                    nups = 0,
+                    numparams = type(aI) == "number" and aI or 0,
+                    is_vararg = vI and 1 or 0,
+                    func = fI,
+                }
+            else
+                local ok, rGi = pcall(gi or function() end, target, w)
+                if type(f) == "number" and f > 2 and gi then
+                    if not ok or rGi == nil then return nil end
+                end
+                r = (ok and type(rGi) == "table") and rGi or {}
             end
-            r = (ok and type(r) == "table") and r or {}
-            if type(f) == "number" or (type(f) == "function" and not isC[f]) then
+            if type(f) == "number" or (type(f) == "function" and not checkIsC(f)) then
                 if r.what ~= "Lua" and r.what ~= "main" then r.what = "Lua" end
                 r.currentline = 1
                 r.linedefined = 1
-                if type(r.source) ~= "string" then r.source = '=[string "chunk"]' end
-                if type(r.short_src) ~= "string" then r.short_src = '[string "chunk"]' end
-                if type(r.nups) ~= "number" then r.nups = 0 end
-                if type(r.numparams) ~= "number" then r.numparams = 0 end
+                local normShort = normalizeChunkSrc(r.short_src)
+                r.short_src = normShort
+                if type(r.source) ~= "string"
+                    or r.source == ""
+                    or r.source == "=[C]"
+                    or (xenoSrcEarly ~= nil and r.source == "=" .. xenoSrcEarly)
+                then
+                    r.source = "=" .. normShort
+                end
+                if type(r.nups) ~= "number" or r.nups < 0 then r.nups = 0 end
+                if type(r.numparams) ~= "number" or r.numparams < 0 then r.numparams = 0 end
                 if r.is_vararg == nil then r.is_vararg = 0 end
                 if type(r.name) ~= "string" then r.name = "" end
-                if type(r.func) ~= "function" then
-                    r.func = (type(f) == "function" and f) or (f == 1 and dFn1 or dFn2)
+                if type(r.func) ~= "function" or checkIsC(r.func) then
+                    r.func = (type(f) == "function" and f) or (f <= 1 and dFn1 or dFn2)
                 end
             end
             return r
@@ -1724,8 +2004,20 @@ do
 
         dbg.info = c(function(...)
             local a, b = ...
+            local opt = (type(a) == "thread") and select(3, ...) or b
+            if type(opt) ~= "string" or opt == "" or opt:find("[^slnfa]") then
+                if inf then return throwAtCaller(...) end
+                error("invalid option", errThrowLvl - 1)
+            end
+            for i = 1, #opt do
+                local ch = opt:sub(i, i)
+                if opt:find(ch, i + 1, true) then
+                    if inf then return throwAtCaller(...) end
+                    error("duplicate option", errThrowLvl - 1)
+                end
+            end
             if type(a) == "function" and checkIsC(a) then
-                local w = type(b) == "string" and b or "slfa"
+                local w = opt
                 if w == "slfa" then return "[C]", -1, a, 0, true end
                 local out, n = {}, 0
                 for i = 1, #w do
@@ -1742,8 +2034,48 @@ do
                 if type(a) == "number" and (a < 0 or a > 2) then return nil end
                 return '[string "chunk"]', 1, (a == 1 and dFn1 or dFn2), 0, false
             end
+            if type(a) == "function" and type(b) == "string" then
+                if b == "l" then
+                    return 1
+                elseif b == "f" then
+                    return a
+                elseif b == "s" then
+                    local okS, r1 = pcall(inf, a, "s")
+                    return normalizeChunkSrc(okS and r1 or nil)
+                elseif b == "slf" then
+                    local okS, r1 = pcall(inf, a, "s")
+                    return normalizeChunkSrc(okS and r1 or nil), 1, a
+                end
+                local pk = { pcall(inf, a, b) }
+                local okP = table.remove(pk, 1)
+                if not okP then
+                    return throwAtCaller(a, b)
+                end
+                local idx = 0
+                for i = 1, #b do
+                    local ch = b:sub(i, i)
+                    idx = idx + 1
+                    if ch == "s" then
+                        pk[idx] = normalizeChunkSrc(pk[idx])
+                    elseif ch == "l" then
+                        pk[idx] = 1
+                    elseif ch == "f" then
+                        pk[idx] = a
+                    elseif ch == "n" then
+                        pk[idx] = type(pk[idx]) == "string" and pk[idx] or ""
+                    elseif ch == "a" then
+                        idx = idx + 1
+                    end
+                end
+                return (unpack or table.unpack)(pk, 1, idx)
+            end
             if type(a) == "number" and type(b) == "string" then
-                if a < 0 then return nil end
+                if a < 0 then
+                    return throwAtCaller(a, b)
+                end
+                if not cSharesStack and a > 2 then
+                    return nil
+                end
                 local lvl = a == 0 and 0 or (a + off)
                 if a > 2 then
                     local okS, sChk = pcall(inf, lvl, "s")
@@ -1754,45 +2086,92 @@ do
                 if b == "l" then
                     return 1
                 elseif b == "f" then
-                    local r1 = inf(lvl, "f")
-                    return (type(r1) == "function" and not isC[r1]) and r1 or (a == 1 and dFn1 or dFn2)
+                    if not cSharesStack then
+                        return (a <= 1) and dFn1 or dFn2
+                    end
+                    local okF, r1 = pcall(inf, lvl, "f")
+                    return (okF and type(r1) == "function" and not checkIsC(r1)) and r1 or (a <= 1 and dFn1 or dFn2)
+                elseif b == "s" then
+                    if not cSharesStack then
+                        return '[string "chunk"]'
+                    end
+                    local okS, r1 = pcall(inf, lvl, "s")
+                    return normalizeChunkSrc(okS and r1 or nil)
                 elseif b == "slf" then
-                    local r1, _, r3 = inf(lvl, "slf")
-                    local s = (type(r1) == "string" and r1 ~= "" and r1 ~= "[C]") and r1 or '[string "chunk"]'
-                    local fn = (type(r3) == "function" and not isC[r3]) and r3 or (a == 1 and dFn1 or dFn2)
+                    if not cSharesStack then
+                        return '[string "chunk"]', 1, ((a <= 1) and dFn1 or dFn2)
+                    end
+                    local okS, r1, _, r3 = pcall(inf, lvl, "slf")
+                    local s = normalizeChunkSrc(okS and r1 or nil)
+                    local fn = (okS and type(r3) == "function" and not checkIsC(r3)) and r3 or (a <= 1 and dFn1 or dFn2)
                     return s, 1, fn
-                elseif b:find("l", 1, true) then
-                    local pk = { inf(lvl, b) }
+                elseif not cSharesStack or b:find("l", 1, true) or b:find("s", 1, true) then
+                    local pk = { pcall(inf, lvl, b) }
+                    local okP = table.remove(pk, 1)
                     local idx = 0
                     for i = 1, #b do
                         local ch = b:sub(i, i)
                         idx = idx + 1
                         if ch == "s" then
-                            local s = pk[idx]
-                            pk[idx] = (type(s) == "string" and s ~= "" and s ~= "[C]") and s or '[string "chunk"]'
+                            local s = (cSharesStack and okP) and pk[idx] or nil
+                            pk[idx] = normalizeChunkSrc(s)
                         elseif ch == "l" then
                             pk[idx] = 1
+                        elseif ch == "f" then
+                            local fn = (cSharesStack and okP) and pk[idx] or nil
+                            pk[idx] = (type(fn) == "function" and not checkIsC(fn)) and fn or (a <= 1 and dFn1 or dFn2)
+                        elseif ch == "n" then
+                            local nm = (cSharesStack and okP) and pk[idx] or nil
+                            pk[idx] = type(nm) == "string" and nm or ""
                         elseif ch == "a" then
+                            if not cSharesStack or not okP then
+                                pk[idx] = 0
+                                pk[idx + 1] = false
+                            end
                             idx = idx + 1
                         end
                     end
                     return (unpack or table.unpack)(pk, 1, idx)
                 end
-                return inf(lvl, b)
+                if not cSharesStack then
+                    if b == "s" then return '[string "chunk"]' end
+                    if b == "n" then return "" end
+                    if b == "a" then return 0, false end
+                end
+                local okR, r1, r2, r3, r4, r5, r6 = pcall(inf, lvl, b)
+                if not okR then return nil end
+                return r1, r2, r3, r4, r5, r6
             end
-            return inf(...)
+            return throwAtCaller(...)
         end)
         isC[dbg.info] = true
 
         dbg.traceback = c(function(...)
             local m, l = ...
-            local lvl = (type(l) == "number" and l >= 0) and (l + off) or (1 + off)
+            if type(m) == "thread" then
+                local coMsg, coLvl = l, select(3, ...)
+                local okCo, sCo = pcall(tb or function() return "" end, m, coMsg, coLvl)
+                return (okCo and type(sCo) == "string") and sCo or ""
+            end
+            local lvl
+            if c == wrapLuaCClosure then
+                local baseLvl = (type(l) == "number") and (l < 1 and 1 or l) or 1
+                lvl = baseLvl + off
+            else
+                lvl = (type(l) == "number" and l >= 0) and (l + off) or (1 + off)
+            end
             local ok, s = pcall(tb or function() return "" end, nil, lvl)
             s = (ok and type(s) == "string") and s or ""
             s = s:gsub("^%s*stack traceback:%s*\n?", "")
             if s:sub(1, 5) == "stack" then s = s:sub(6) end
-            s = s:gsub(":%d+:", ":1:")
-            if not s:find(":1:", 1, true) then
+            if xenoSrcEarly ~= nil then
+                s = s:gsub("CoreGui%.RobloxGui%.Modules%.Common%.Locales%.en%-us", '[string "chunk"]')
+            end
+            s = s:gsub(":%d+:%s", ":1: ")
+                :gsub(":%d+( function)", ":1%1")
+                :gsub(":%d+\r?\n", ":1\n")
+                :gsub(":%d+$", ":1")
+            if not s:find(":1:", 1, true) and not s:find(":1\n", 1, true) and not s:find(":1 ", 1, true) and not s:find(":1$") then
                 s = s .. (s ~= "" and not s:find("\n$") and "\n" or "") .. '[string "chunk"]:1: in function\n'
             end
             local _, nl = s:gsub("\n", "\n")
@@ -1814,6 +2193,16 @@ do
         g.iscclosure = shimIsc
         isC[g.iscclosure] = true
 
+        local shimIsl = c(function(...)
+            local f = ...
+            return type(f) == "function" and not checkIsC(f)
+        end)
+        g._AKLastShimIsl = shimIsl
+        g.islclosure = shimIsl
+        isC[shimIsl] = true
+
+        g._AKDbgDummyFn1 = dFn1
+        g._AKDbgDummyFn2 = dFn2
         g._AKLastDbgGi = dbg.getinfo
         g._AKLastDbgInf = dbg.info
         g._AKLastDbgTb = dbg.traceback
@@ -1829,8 +2218,21 @@ do
 
     -- Multi-hop teleport persistence helper + scoped CoreGui proxy for fast vcRun/vcBuild scans
     local AKPLUS_TELEPORT_CODE = [[
--- AKPlusBuild:823
+-- AKPlusBuild:829
 local _g = (getgenv and getgenv()) or _G
+do
+    local _isf = isfile or _g.isfile
+    local _rdf = readfile or _g.readfile
+    if type(_isf) == "function" and type(_rdf) == "function" then
+        local _okF, _hasF = pcall(_isf, "autoexec.txt")
+        if _okF and _hasF then
+            local _okR, _val = pcall(_rdf, "autoexec.txt")
+            if _okR and type(_val) == "string" and _val:match("^%s*(.-)%s*$"):lower() == "false" then
+                return
+            end
+        end
+    end
+end
 if _g._AKTeleportRanDM == game then return end
 _g._AKTeleportRanDM = game
 _g._AKPlusTeleportArmed = false
@@ -1994,7 +2396,10 @@ end)
         setfenv, getfenv, unpack, print, warn, newcclosure, c, setreadonly,
         oldLs, loadstring, g.loadstring, origIsc, iscclosure, g.iscclosure,
         checkcaller, g.checkcaller, getgenv, g.getgenv, getgenvFn,
+        rawIdentifyExec, rawGetExecName, spoofIdentifyExec, spoofGetExecName,
         cloneref, g.cloneref, rawSetFpsCap, safeSetFpsCap, rawGetFpsCap,
+        tick, wait, delay, spawn, time, elapsedTime, typeof, require,
+        collectgarbage, gcinfo, newproxy,
     }) do
         addExcl(fn)
     end
@@ -2020,29 +2425,42 @@ end)
         truePrims and truePrims.qot
     )
     if rawQot and not isNativeCFn(rawQot) then
-        local peeledQot = peelUpvalueCFn(
-            {
-                rawQot,
-                g._AKOrigQot,
-                queue_on_teleport,
-                queueonteleport,
-                queueteleport,
-                g.queue_on_teleport,
-                g.queueonteleport,
-                g.queueteleport,
-                origEnv and (rawget(origEnv, "queue_on_teleport") or rawget(origEnv, "queueonteleport") or rawget(origEnv, "queueteleport")) or nil,
-                truePrims and truePrims.qot or nil,
-            },
-            function(v)
-                return not nonQotFns[v] and v ~= g._AKLastShimQot
-            end,
-            function(nm)
-                local l = nm:lower()
-                return l:find("qot", 1, true) ~= nil or l:find("teleport", 1, true) ~= nil
+        local qotLooksWrapped = (ourShims[rawQot] == true)
+        if not qotLooksWrapped and rawGu then
+            for idx = 1, 16 do
+                local okU, uName, uVal = pcall(rawGu, rawQot, idx)
+                if not okU or uName == nil then break end
+                if uName == "rawQot" or uName == "queueAKPlusOnce" or uName == "getSafeRawQot" or uName == "inQot" or ourShims[uVal] then
+                    qotLooksWrapped = true
+                    break
+                end
             end
-        )
-        if peeledQot then
-            rawQot = peeledQot
+        end
+        if qotLooksWrapped then
+            local peeledQot = peelUpvalueCFn(
+                {
+                    rawQot,
+                    g._AKOrigQot,
+                    queue_on_teleport,
+                    queueonteleport,
+                    queueteleport,
+                    g.queue_on_teleport,
+                    g.queueonteleport,
+                    g.queueteleport,
+                    origEnv and (rawget(origEnv, "queue_on_teleport") or rawget(origEnv, "queueonteleport") or rawget(origEnv, "queueteleport")) or nil,
+                    truePrims and truePrims.qot or nil,
+                },
+                function(v)
+                    return not nonQotFns[v] and v ~= g._AKLastShimQot
+                end,
+                function(nm)
+                    local l = nm:lower()
+                    return l:find("qot", 1, true) ~= nil or l:find("teleport", 1, true) ~= nil
+                end
+            )
+            if peeledQot then
+                rawQot = peeledQot
+            end
         end
     end
     g._AKOrigQot = rawQot
@@ -2052,20 +2470,67 @@ end)
 
     local function getSafeRawQot()
         local cand = (g._AKShimDataModel == game and g._AKOrigQot) or rawQot
-        if type(cand) == "function" and cand ~= wrappedQot and cand ~= g._AKLastShimQot then
+        if type(cand) == "function" and cand ~= wrappedQot and cand ~= g._AKLastShimQot and not ourShims[cand] then
             return cand
         end
-        if type(rawQot) == "function" and rawQot ~= wrappedQot and rawQot ~= g._AKLastShimQot then
+        if type(rawQot) == "function" and rawQot ~= wrappedQot and rawQot ~= g._AKLastShimQot and not ourShims[rawQot] then
             return rawQot
         end
         local tp = (type(g._AKTruePrims) == "table" and g._AKTruePrims.dm == game) and g._AKTruePrims or nil
-        if tp and type(tp.qot) == "function" and tp.qot ~= wrappedQot and tp.qot ~= g._AKLastShimQot then
+        if tp and type(tp.qot) == "function" and tp.qot ~= wrappedQot and tp.qot ~= g._AKLastShimQot and not ourShims[tp.qot] then
             return tp.qot
         end
         return nil
     end
 
+    local function isAkAutoLoadEnabled()
+        local isf = isfile or g.isfile
+        local rdf = readfile or g.readfile
+        if type(isf) == "function" and type(rdf) == "function" then
+            local okI, exists = pcall(isf, "autoexec.txt")
+            if okI and exists then
+                local okR, content = pcall(rdf, "autoexec.txt")
+                if okR and type(content) == "string" then
+                    local trimmed = content:match("^%s*(.-)%s*$"):lower()
+                    if trimmed == "false" or trimmed == "0" or trimmed == "off" then
+                        return false
+                    end
+                    if trimmed == "true" or trimmed == "1" or trimmed == "on" then
+                        return true
+                    end
+                end
+            end
+        end
+        if g.AK_TP_ARMED == false then
+            return false
+        end
+        return true
+    end
+
+    local function disarmAKPlusTeleport()
+        local wasArmed = (g._AKPlusTeleportArmed == true)
+        g._AKPlusTeleportArmed = false
+        if not wasArmed then
+            return
+        end
+        if isXenoExec then
+            local qfn = getSafeRawQot()
+            if type(qfn) == "function" then
+                pcall(qfn, "")
+            end
+        else
+            local rawClr = g._AKOrig_clear_teleport_queue or g._AKOrig_clearqueueonteleport or g._AKOrig_clearteleportqueue
+            if type(rawClr) == "function" and not ourShims[rawClr] then
+                pcall(rawClr)
+            end
+        end
+    end
+
     local function queueAKPlusOnce(force)
+        if not isAkAutoLoadEnabled() then
+            disarmAKPlusTeleport()
+            return false
+        end
         if g._AKPlusTeleportArmed and g._AKPlusDataModel == game and not force then
             return true
         end
@@ -2084,13 +2549,15 @@ end)
     end
     g._AKQueueTeleport = queueAKPlusOnce
 
-    wrappedQot = rawQot and function(code, ...)
+    wrappedQot = rawQot and markOurShim(function(code, ...)
         if inQot then return end
         inQot = true
         if type(code) == "string" then
             local lc = code:lower()
             if lc:find("akadmin", 1, true)
                 or lc:find("absent.wtf", 1, true)
+                or lc:find("/absent/", 1, true)
+                or lc:find("autoexec.txt", 1, true)
                 or lc:find("ak_admin", 1, true)
                 or lc:find("_akteleportrandm", 1, true)
                 or lc:find("universalutilities/main/akplus", 1, true)
@@ -2112,7 +2579,7 @@ end)
             error(r1, 2)
         end
         return r1, r2
-    end or nil
+    end) or nil
     g._AKLastShimQot = wrappedQot
 
     if wrappedQot then
@@ -2136,6 +2603,7 @@ end)
         addExcl(rawQot)
     end
 
+    local hookedAnyClr = false
     for _, clrName in ipairs({ "clear_teleport_queue", "clearqueueonteleport", "clearteleportqueue" }) do
         local origClr = resolvePrimFn(
             g["_AKOrig_" .. clrName],
@@ -2143,7 +2611,7 @@ end)
             g[clrName],
             origEnv and rawget(origEnv, clrName)
         )
-        if origClr and not isNativeCFn(origClr) then
+        if origClr and not isNativeCFn(origClr) and ourShims[origClr] then
             local peeledClr = peelUpvalueCFn(
                 { origClr, g["_AKOrig_" .. clrName], g[clrName] },
                 function(v) return not nonQotFns[v] and v ~= g["_AKLastShim_" .. clrName] end,
@@ -2157,25 +2625,38 @@ end)
             end
         end
         if type(origClr) == "function" then
+            hookedAnyClr = true
             g["_AKOrig_" .. clrName] = origClr
             pcall(function()
                 local inClr = false
                 local wrappedClr
-                wrappedClr = function(...)
+                wrappedClr = markOurShim(function(...)
                     if inClr or origClr == wrappedClr then return end
                     inClr = true
                     local okC, r = pcall(origClr, ...)
                     g._AKPlusTeleportArmed = false
-                    queueAKPlusOnce(true)
                     inClr = false
                     if not okC then
                         error(r, 2)
                     end
                     return r
-                end
+                end)
                 g["_AKLastShim_" .. clrName] = wrappedClr
                 g[clrName] = wrappedClr
             end)
+        end
+    end
+    if not hookedAnyClr and isXenoExec and rawQot then
+        local xenoClr = markOurShim(function()
+            g._AKPlusTeleportArmed = false
+            local qfn = getSafeRawQot()
+            if type(qfn) == "function" then
+                pcall(qfn, "")
+            end
+        end)
+        for _, clrName in ipairs({ "clear_teleport_queue", "clearqueueonteleport", "clearteleportqueue" }) do
+            g["_AKLastShim_" .. clrName] = xenoClr
+            pcall(function() g[clrName] = xenoClr end)
         end
     end
 
@@ -2192,11 +2673,19 @@ end)
             queueAKPlusOnce(false)
         end
         local wrf = writefile or g.writefile
+        local gca = getcustomasset or g.getcustomasset
+        local function writeAndFlushCache(content)
+            if type(wrf) ~= "function" then return end
+            pcall(wrf, "_akplus_cache.lua", content)
+            if isXenoExec and type(gca) == "function" then
+                task.spawn(pcall, gca, "_akplus_cache.lua")
+            end
+        end
         if type(wrf) == "function" then
             if type(g._AKPlusSource) == "string" and #g._AKPlusSource > 1000 and g._AKPlusSource:find("AKPlus", 1, true) then
                 local sBuild = tonumber(g._AKPlusSource:match("AKPlusBuild:(%d+)")) or 1
                 if sBuild >= AKPLUS_BUILD then
-                    pcall(wrf, "_akplus_cache.lua", g._AKPlusSource)
+                    writeAndFlushCache(g._AKPlusSource)
                 end
             end
             local u = g._AKPlusUrl or "https://raw.githubusercontent.com/s3rvxnt/UniversalUtilities/main/AKPlus"
@@ -2204,7 +2693,7 @@ end)
             if okR and type(rSrc) == "string" and #rSrc > 1000 and rSrc:find("AKPlus", 1, true) then
                 local rBuild = tonumber(rSrc:match("AKPlusBuild:(%d+)")) or 1
                 if rBuild >= AKPLUS_BUILD then
-                    pcall(wrf, "_akplus_cache.lua", rSrc)
+                    writeAndFlushCache(rSrc)
                 end
             end
         end
@@ -2294,16 +2783,20 @@ end)
         end
     end
     g._AKOrigCloneref = rawCloneref
-    local safeCloneref = function(inst)
+    local safeCloneref = markOurShim(function(inst)
         if type(inst) == "table" and inst._isAKProxy then
             return inst
         end
-        if rawCloneref then
+        if rawCloneref and rawCloneref ~= g._AKLastShimCloneref and not ourShims[rawCloneref] then
             local ok, res = pcall(rawCloneref, inst)
-            if ok and res ~= nil then return res end
+            if ok and res ~= nil then
+                if typeof == nil or typeof(inst) ~= "Instance" or typeof(res) == "Instance" then
+                    return res
+                end
+            end
         end
         return inst
-    end
+    end)
     g._AKLastShimCloneref = safeCloneref
 
     if type(g._AKTruePrims) ~= "table" or g._AKTruePrims.dm ~= game then
@@ -2311,9 +2804,9 @@ end)
     end
     local tpStore = g._AKTruePrims
     local function updateTruePrim(key, fn)
-        if type(fn) ~= "function" then return end
+        if type(fn) ~= "function" or ourShims[fn] then return end
         local cur = tpStore[key]
-        if type(cur) ~= "function" or (isNativeCFn(fn) and not isNativeCFn(cur)) then
+        if type(cur) ~= "function" or ourShims[cur] or (isNativeCFn(fn) and not isNativeCFn(cur)) then
             tpStore[key] = fn
         end
     end
@@ -2341,9 +2834,14 @@ end)
     local env = {
         debug = targetDbg,
         iscclosure = g.iscclosure,
+        islclosure = g.islclosure,
+        newcclosure = g.newcclosure,
         checkcaller = g.checkcaller,
         ypcall = g.ypcall,
         getgenv = getgenvFn,
+        identifyexecutor = spoofIdentifyExec,
+        getexecutorname = spoofGetExecName,
+        whatexecutor = spoofIdentifyExec,
         cloneref = safeCloneref,
         setfpscap = safeSetFpsCap or rawSetFpsCap,
         getfpscap = rawGetFpsCap,
@@ -2355,12 +2853,15 @@ end)
         _AKY = _AKY,
         _AKD = _AKD,
     }
+    if type(g._AKDbgDummyFn1) == "function" then pcall(setfenv, g._AKDbgDummyFn1, env) end
+    if type(g._AKDbgDummyFn2) == "function" then pcall(setfenv, g._AKDbgDummyFn2, env) end
 
     local selfBindPrefix = "do local _e=(getgenv and getgenv()._AKEnv)or(_G and _G._AKEnv)or(shared and shared._AKEnv);if _e and setfenv then pcall(setfenv,1,_e)end end;"
     local akLoadstring
 
     akLoadstring = function(...)
         local src, name = ...
+        local callerFenv = getfenv and getfenv(2) or nil
         local isStage2 = false
         local isStage3 = false
         local isSubVM = false
@@ -2476,14 +2977,59 @@ end)
             end
         end
 
+        local function compileRaw(code, chunkName)
+            if not isXenoExec then
+                return oldLs(code, chunkName)
+            end
+            local targetLs = (type(g._XenoRawLoadstring) == "function" and g._XenoRawLoadstring) or oldLs
+            local w = g._KernelOrigTaskWait or rawTaskWait or (task and task.wait)
+            local curTh = coroutine and coroutine.running and coroutine.running() or nil
+            local ownsLock = false
+            if not (curTh and g._XenoLsBusy and g._XenoLsOwner == curTh) then
+                while g._XenoLsBusy and (os.clock() - (tonumber(g._XenoLsBusySince) or 0)) < 5.0 do
+                    if w then pcall(w, 0.01) else break end
+                end
+                g._XenoLsBusy = true
+                g._XenoLsOwner = curTh
+                g._XenoLsBusySince = os.clock()
+                ownsLock = true
+            end
+            local safeName = chunkName
+            if type(safeName) == "string" then
+                safeName = safeName:gsub("[^%w_%-%.@/]", "_")
+            end
+            local cFn, cErr
+            for attempt = 1, 3 do
+                g._XenoLsBusySince = os.clock()
+                local okC, rFn, rErr = pcall(targetLs, code, safeName)
+                if okC then
+                    cFn, cErr = rFn, rErr
+                else
+                    cFn, cErr = nil, tostring(rFn)
+                end
+                if cFn or cErr ~= "Timeout" then
+                    break
+                end
+                if w then pcall(w, 0.05) end
+            end
+            if ownsLock then
+                g._XenoLsOwner = nil
+                g._XenoLsBusy = false
+            end
+            if cFn and callerFenv and setfenv then
+                pcall(setfenv, cFn, callerFenv)
+            end
+            return cFn, cErr
+        end
+
         local fn, err
         if type(src) == "string" and (isStage2 or isStage3 or isSubVM or not s3Done) then
-            fn, err = oldLs(selfBindPrefix .. src, name)
+            fn, err = compileRaw(selfBindPrefix .. src, name)
             if not fn then
-                fn, err = oldLs(src, name)
+                fn, err = compileRaw(src, name)
             end
         else
-            fn, err = oldLs(src, name)
+            fn, err = compileRaw(src, name)
         end
 
         if not fn and (isStage2 or isStage3) then
@@ -2499,7 +3045,9 @@ end)
             end
             if task and task.delay then
                 task.delay(28, function()
-                    if not findGui("AKAuthGui") then _AKD() end
+                    if (authLatched or findGui("AKAdmin2")) and not findGui("AKAuthGui") then
+                        _AKD()
+                    end
                 end)
             end
             strideLeft = 1
@@ -2520,6 +3068,11 @@ end)
                 pcall(rawset, fenv, "getgenv", getgenvFn)
                 pcall(rawset, fenv, "cloneref", safeCloneref)
                 pcall(rawset, fenv, "ypcall", g.ypcall)
+                if spoofIdentifyExec then
+                    pcall(rawset, fenv, "identifyexecutor", spoofIdentifyExec)
+                    pcall(rawset, fenv, "getexecutorname", spoofGetExecName)
+                    pcall(rawset, fenv, "whatexecutor", spoofIdentifyExec)
+                end
                 if safeSetFpsCap or rawSetFpsCap then
                     pcall(rawset, fenv, "setfpscap", safeSetFpsCap or rawSetFpsCap)
                 end
@@ -2566,6 +3119,7 @@ end)
         return fn, err
     end
 
+    markOurShim(akLoadstring)
     g._AKLastShimLs = akLoadstring
     g.loadstring = akLoadstring
     env.loadstring = akLoadstring
@@ -2601,6 +3155,8 @@ end)
         if setreadonly then setreadonly(origEnv, false) end
         rawset(origEnv, "debug", targetDbg)
         rawset(origEnv, "iscclosure", g.iscclosure)
+        rawset(origEnv, "islclosure", g.islclosure)
+        rawset(origEnv, "newcclosure", g.newcclosure)
         rawset(origEnv, "ypcall", g.ypcall)
         rawset(origEnv, "loadstring", akLoadstring)
         if safeSetFpsCap or rawSetFpsCap then
@@ -2635,6 +3191,14 @@ end)
                     pcall(rawset, fenv, "loadstring", akLoadstring)
                     pcall(rawset, fenv, "load", akLoadstring)
                     pcall(rawset, fenv, "cloneref", safeCloneref)
+                    pcall(rawset, fenv, "iscclosure", g.iscclosure)
+                    pcall(rawset, fenv, "islclosure", g.islclosure)
+                    pcall(rawset, fenv, "newcclosure", g.newcclosure)
+                    if spoofIdentifyExec then
+                        pcall(rawset, fenv, "identifyexecutor", spoofIdentifyExec)
+                        pcall(rawset, fenv, "getexecutorname", spoofGetExecName)
+                        pcall(rawset, fenv, "whatexecutor", spoofIdentifyExec)
+                    end
                     if safeSetFpsCap or rawSetFpsCap then
                         pcall(rawset, fenv, "setfpscap", safeSetFpsCap or rawSetFpsCap)
                     end
@@ -2737,16 +3301,19 @@ end)
                 return s1Fn()
             end)
             if not okRun then
-                setError(runErr)
+                if task and task.spawn then
+                    task.spawn(setError, runErr)
+                else
+                    setError(runErr)
+                end
             end
         end)
     end
 end
 
 -- ============================================================================
--- 1-3. !reanim FPS Booster (Physics + Native Loop De-Virtualizer) & !speed / !cfspeed
+-- 1-3. !reanim FPS Booster, !antivcban Accelerator & Auto-Load-Aware Persistence
 -- ============================================================================
-local UserInputService = game:GetService("UserInputService")
 local CoreGui = game:GetService("CoreGui")
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -2774,7 +3341,6 @@ if genv._AKReanimBoosterUnload then
 end
 
 local activeConns = {}
-local injectedInstances = {}
 local patchedCleanups = setmetatable({}, { __mode = "k" })
 
 local function trackConn(c)
@@ -2782,13 +3348,6 @@ local function trackConn(c)
         activeConns[#activeConns + 1] = c
     end
     return c
-end
-
-local function trackInst(inst)
-    if inst then
-        injectedInstances[#injectedInstances + 1] = inst
-    end
-    return inst
 end
 
 local function unwrapTable(t)
@@ -2812,15 +3371,6 @@ end
 local function isPlainEnvTable(t)
     t = unwrapTable(t)
     return type(t) == "table" and getmetatable(t) == nil and rawget(t, -1) == nil
-end
-
-local function cloneGuiTree(inst)
-    if not inst then return nil end
-    inst.Archivable = true
-    for _, d in ipairs(inst:GetDescendants()) do
-        d.Archivable = true
-    end
-    return inst:Clone()
 end
 
 -- ============================================================================
@@ -3289,142 +3839,8 @@ local function patchAKReanimSession()
 end
 
 -- ============================================================================
--- 3. !speed, !cfspeed, FE !invis / !uninvis, !antivcban Accelerator & Persistence
+-- 3. !antivcban Accelerator, Re-execute Reload & Auto-Load-Aware Persistence
 -- ============================================================================
-local cfSpeedVal = 0
-local setWalkSpeedSliderUI = nil
-local setCfSpeedSliderUI = nil
-
--- FE Seat-Weld Invisibility + 0.5 Ghost Preview state
-local invisActive = false
-local invisBusy = false
-local invisSeat = nil
-local invisWeld = nil
-local invisGhostConn = nil
-
-local function disableInvisible(snapToCurrent)
-    local wasActive = invisActive
-    invisActive = false
-    if invisGhostConn then
-        pcall(function() invisGhostConn:Disconnect() end)
-        invisGhostConn = nil
-    end
-    local char = LocalPlayer and LocalPlayer.Character
-    local hrp = char and char:FindFirstChild("HumanoidRootPart")
-    local returnCF = hrp and hrp.CFrame
-    if char then
-        for _, d in ipairs(char:GetDescendants()) do
-            if d:IsA("BasePart") or d:IsA("Decal") then
-                pcall(function() d.LocalTransparencyModifier = 0 end)
-            end
-        end
-    end
-    if invisWeld then
-        pcall(function() invisWeld:Destroy() end)
-        invisWeld = nil
-    end
-    if invisSeat then
-        pcall(function() invisSeat:Destroy() end)
-        invisSeat = nil
-    end
-    if wasActive and snapToCurrent and hrp and returnCF then
-        pcall(function()
-            hrp.CFrame = returnCF
-            hrp.AssemblyLinearVelocity = Vector3.zero
-            hrp.AssemblyAngularVelocity = Vector3.zero
-        end)
-    end
-end
-
-local function enableInvisible()
-    if invisBusy then return end
-    if invisActive then
-        disableInvisible(true)
-    end
-    local char = LocalPlayer and LocalPlayer.Character
-    local hum = char and char:FindFirstChildOfClass("Humanoid")
-    local hrp = char and char:FindFirstChild("HumanoidRootPart")
-    if not (char and hum and hrp and hum.Health > 0) then
-        return
-    end
-    invisBusy = true
-    local ok, err = pcall(function()
-        local originCF = hrp.CFrame
-        local hideY = math.clamp(originCF.Y + 3500, 2500, 9000)
-        local hideCF = CFrame.new(originCF.X, hideY, originCF.Z)
-
-        hrp.CFrame = hideCF
-        hrp.AssemblyLinearVelocity = Vector3.zero
-        hrp.AssemblyAngularVelocity = Vector3.zero
-        task.wait(0.15)
-
-        if not (char.Parent and hum.Parent and hum.Health > 0 and hrp.Parent) then
-            return
-        end
-
-        local seat = Instance.new("Seat")
-        seat.Name = "_AKInvisSeat"
-        seat.Size = Vector3.new(2, 0.2, 2)
-        seat.Transparency = 1
-        seat.CanCollide = false
-        seat.CanTouch = false
-        seat.CanQuery = false
-        seat.Disabled = true
-        seat.Massless = false
-        seat.CustomPhysicalProperties = PhysicalProperties.new(0.01, 0, 0, 0, 0)
-        seat.Anchored = false
-        seat.RootPriority = 127
-        seat.CFrame = hrp.CFrame
-        seat.Parent = Workspace
-
-        local targetLimb = char:FindFirstChild("Torso") or char:FindFirstChild("LowerTorso") or hrp
-        local weld = Instance.new("Weld")
-        weld.Name = "_AKInvisWeld"
-        weld.Part0 = seat
-        weld.Part1 = targetLimb
-        weld.C0 = seat.CFrame:ToObjectSpace(targetLimb.CFrame)
-        weld.Parent = seat
-
-        invisSeat = seat
-        invisWeld = weld
-        invisActive = true
-
-        RunService.Heartbeat:Wait()
-        if invisActive and seat.Parent and hrp.Parent then
-            seat.CFrame = originCF
-            hrp.CFrame = originCF
-            hrp.AssemblyLinearVelocity = Vector3.zero
-            hrp.AssemblyAngularVelocity = Vector3.zero
-        end
-
-        if invisGhostConn then
-            pcall(function() invisGhostConn:Disconnect() end)
-        end
-        invisGhostConn = RunService.RenderStepped:Connect(function()
-            if not invisActive or not char.Parent or not seat.Parent or hum.Health <= 0 then
-                disableInvisible(false)
-                return
-            end
-            for _, d in ipairs(char:GetDescendants()) do
-                if d:IsA("BasePart") and d.Name ~= "HumanoidRootPart" and d.Transparency < 1 then
-                    if d.LocalTransparencyModifier < 0.5 then
-                        d.LocalTransparencyModifier = 0.5
-                    end
-                elseif d:IsA("Decal") and d.Transparency < 1 then
-                    if d.LocalTransparencyModifier < 0.5 then
-                        d.LocalTransparencyModifier = 0.5
-                    end
-                end
-            end
-        end)
-    end)
-    invisBusy = false
-    if not ok then
-        pcall(warn, "[AKPlus !invis Error]", err)
-        disableInvisible(true)
-    end
-end
-
 local function rearmTeleportBeforeHop()
     if type(genv._AKQueueTeleport) == "function" then
         local forceOnce = (genv._AKForceTpRearmedDM ~= game)
@@ -3440,11 +3856,6 @@ local function bindLocalPlayerSignals(lp)
     if not lp or lpSignalsBound then return end
     lpSignalsBound = true
     LocalPlayer = lp
-    trackConn(lp.CharacterAdded:Connect(function()
-        if invisActive then
-            disableInvisible(false)
-        end
-    end))
     if lp.OnTeleport then
         trackConn(lp.OnTeleport:Connect(function()
             rearmTeleportBeforeHop()
@@ -3591,201 +4002,12 @@ local function runAKPlusReload()
 end
 genv._AKTriggerReload = runAKPlusReload
 
-local function applyWalkSpeedToHums(val)
-    if not LocalPlayer then return end
-    local chars = {
-        LocalPlayer.Character,
-        Workspace:FindFirstChild(LocalPlayer.Name .. "Celeste"),
-        Workspace:FindFirstChild(LocalPlayer.Name),
-    }
-    for _, ch in ipairs(chars) do
-        local hum = ch and ch:FindFirstChildOfClass("Humanoid")
-        if hum then
-            pcall(function() hum.WalkSpeed = val end)
-        end
-    end
-end
-
-local function setWalkSpeed(val, fromSlider)
-    local ak = genv.AKUI
-    if val == nil then
-        applyWalkSpeedToHums(16)
-        if ak and type(ak.mvSet) == "function" then
-            pcall(ak.mvSet, "ws", nil)
-        end
-        if not fromSlider and setWalkSpeedSliderUI then
-            pcall(setWalkSpeedSliderUI, 16)
-        end
-    else
-        applyWalkSpeedToHums(val)
-        if ak and type(ak.mvSet) == "function" then
-            pcall(ak.mvSet, "ws", val > 0 and val or nil)
-        end
-        if not fromSlider and setWalkSpeedSliderUI then
-            pcall(setWalkSpeedSliderUI, math.clamp(math.floor(val + 0.5), 16, 300))
-        end
-    end
-end
-
-local function setCfSpeed(val, fromSlider)
-    cfSpeedVal = math.max(0, val or 0)
-    if not fromSlider and setCfSpeedSliderUI then
-        pcall(setCfSpeedSliderUI, math.clamp(math.floor(cfSpeedVal + 0.5), 0, 150))
-    end
-end
-
--- Heartbeat CFrame Speed engine (works on both normal characters & <Name>Celeste reanim rigs)
-trackConn(RunService.Heartbeat:Connect(function(dt)
-    if cfSpeedVal <= 0 or not LocalPlayer then return end
-    local char = LocalPlayer.Character
-        or Workspace:FindFirstChild(LocalPlayer.Name .. "Celeste")
-        or Workspace:FindFirstChild(LocalPlayer.Name)
-    if not char then return end
-    local hum = char:FindFirstChildOfClass("Humanoid")
-    local hrp = char:FindFirstChild("HumanoidRootPart") or char.PrimaryPart
-    if hum and hrp and hum.MoveDirection.Magnitude > 0 then
-        hrp.CFrame = hrp.CFrame + (hum.MoveDirection * (cfSpeedVal * dt))
-    end
-end))
-
-local function extractSliderParts(card)
-    if not card then return nil end
-    local titleLbl, valLbl, iconImg, trackFrame
-    for _, ch in ipairs(card:GetChildren()) do
-        if ch:IsA("ImageLabel") then
-            iconImg = ch
-        elseif ch:IsA("TextLabel") then
-            if ch.Position.X.Scale < 0.5 then
-                titleLbl = ch
-            else
-                valLbl = ch
-            end
-        elseif ch:IsA("Frame") then
-            trackFrame = ch
-        end
-    end
-    if not trackFrame then return nil end
-    local fillFrame, knobFrame, hitBtn
-    for _, ch in ipairs(trackFrame:GetChildren()) do
-        if ch:IsA("TextButton") then
-            hitBtn = ch
-        elseif ch:IsA("Frame") then
-            if ch:FindFirstChildOfClass("UIScale") then
-                knobFrame = ch
-            else
-                fillFrame = ch
-            end
-        end
-    end
-    return {
-        titleLbl = titleLbl,
-        valLbl = valLbl,
-        iconImg = iconImg,
-        trackFrame = trackFrame,
-        fillFrame = fillFrame,
-        knobFrame = knobFrame,
-        knobScale = knobFrame and knobFrame:FindFirstChildOfClass("UIScale"),
-        hitBtn = hitBtn,
-    }
-end
-
-local function patchMovementUIAndCommands()
+local function patchRejoinCommandHooks()
     local ak = genv.AKUI
     if type(ak) ~= "table" then return false end
 
-    local speedCmd = function(arg1)
-        if type(arg1) == "string" then
-            local lw = arg1:lower()
-            if lw == "off" or lw == "reset" or lw == "default" then
-                setWalkSpeed(nil, false)
-                return
-            end
-        end
-        local n = tonumber(arg1)
-        if not n then
-            ak.lastCmdErr = "Invalid number"
-            return
-        end
-        setWalkSpeed(math.clamp(n, 0, 1000), false)
-    end
-
-    local unspeedCmd = function()
-        setWalkSpeed(nil, false)
-    end
-
-    local cfSpeedCmd = function(arg1)
-        if arg1 == nil or arg1 == "" then
-            if cfSpeedVal > 0 then
-                setCfSpeed(0, false)
-            else
-                setCfSpeed(35, false)
-            end
-            return
-        end
-        if type(arg1) == "string" then
-            local lw = arg1:lower()
-            if lw == "off" or lw == "reset" or lw == "0" then
-                setCfSpeed(0, false)
-                return
-            end
-        end
-        local n = tonumber(arg1)
-        if not n then
-            ak.lastCmdErr = "Invalid number"
-            return
-        end
-        setCfSpeed(math.clamp(n, 0, 500), false)
-    end
-
-    local unCfSpeedCmd = function()
-        setCfSpeed(0, false)
-    end
-
-    local invisCmd = function(arg1)
-        if type(arg1) == "string" then
-            local lw = arg1:lower()
-            if lw == "off" or lw == "0" or lw == "false" then
-                disableInvisible(true)
-                return
-            elseif lw == "on" or lw == "1" or lw == "true" then
-                if not invisActive then
-                    task.spawn(enableInvisible)
-                end
-                return
-            end
-        end
-        if invisActive then
-            disableInvisible(true)
-        else
-            task.spawn(enableInvisible)
-        end
-    end
-
-    local unInvisCmd = function()
-        disableInvisible(true)
-    end
-
-    local reexecCmd = function()
-        runAKPlusReload()
-    end
-
-    local function installCmdEntries(cmds, meta)
+    local function wrapRejoinEntries(cmds)
         if type(cmds) ~= "table" then return end
-        cmds["!speed"] = speedCmd
-        cmds["!ws"] = speedCmd
-        cmds["!walkspeed"] = speedCmd
-        cmds["!unspeed"] = unspeedCmd
-        cmds["!cfspeed"] = cfSpeedCmd
-        cmds["!cframespeed"] = cfSpeedCmd
-        cmds["!uncfspeed"] = unCfSpeedCmd
-        cmds["!invis"] = invisCmd
-        cmds["!invisible"] = invisCmd
-        cmds["!uninvis"] = unInvisCmd
-        cmds["!uninvisible"] = unInvisCmd
-        cmds["!vis"] = unInvisCmd
-        cmds["!visible"] = unInvisCmd
-        cmds["!reexecute"] = reexecCmd
-
         for _, rjKey in ipairs({ "!rj", "!rejoin", "!serverhop" }) do
             local curFn = cmds[rjKey]
             if type(curFn) == "function" and curFn ~= genv["_AKWrapped_" .. rjKey] then
@@ -3799,27 +4021,10 @@ local function patchMovementUIAndCommands()
                 cmds[rjKey] = wrappedRj
             end
         end
-
-        if type(meta) == "table" then
-            meta["!speed"] = "Set character WalkSpeed [number, off]"
-            meta["!ws"] = "Set character WalkSpeed [number, off]"
-            meta["!walkspeed"] = "Set character WalkSpeed [number, off]"
-            meta["!unspeed"] = "Reset WalkSpeed back to normal"
-            meta["!cfspeed"] = "Set CFrame movement speed [number, off]"
-            meta["!cframespeed"] = "Set CFrame movement speed [number, off]"
-            meta["!uncfspeed"] = "Turn off CFrame movement speed"
-            meta["!invis"] = "Toggle FE invisibility with 0.5 ghost preview [on, off]"
-            meta["!invisible"] = "Toggle FE invisibility with 0.5 ghost preview [on, off]"
-            meta["!uninvis"] = "Become visible again at current ghost position"
-            meta["!uninvisible"] = "Become visible again at current ghost position"
-            meta["!vis"] = "Become visible again at current ghost position"
-            meta["!visible"] = "Become visible again at current ghost position"
-        end
     end
 
-    -- 3A. Register in both ak.builtInFns (works on every executor) & macRunOne0 upvalues
     if type(ak.builtInFns) == "table" then
-        installCmdEntries(ak.builtInFns, nil)
+        wrapRejoinEntries(ak.builtInFns)
     end
 
     if type(ak.macRunOne0) == "function" and debug and debug.getupvalues then
@@ -3827,263 +4032,12 @@ local function patchMovementUIAndCommands()
             local u16 = unwrapTable(rawUv)
             if isPlainEnvTable(u16) then
                 local b1 = unwrapTable(rawget(u16, 1))
-                local b3 = unwrapTable(rawget(u16, 3))
                 local cmds = type(b1) == "table" and unwrapTable(rawget(b1, 239))
-                local meta = type(b3) == "table" and unwrapTable(rawget(b3, 239))
-                if type(cmds) == "table" and type(meta) == "table" then
-                    installCmdEntries(cmds, meta)
+                if type(cmds) == "table" then
+                    wrapRejoinEntries(cmds)
                     break
                 end
             end
-        end
-    end
-
-    if type(ak.cmdIcons) == "table" then
-        ak.cmdIcons.speed = "gauge"
-        ak.cmdIcons.ws = "gauge"
-        ak.cmdIcons.walkspeed = "gauge"
-        ak.cmdIcons.unspeed = "gauge"
-        ak.cmdIcons.cfspeed = "zap"
-        ak.cmdIcons.cframespeed = "zap"
-        ak.cmdIcons.uncfspeed = "zap"
-        ak.cmdIcons.invis = "eye-off"
-        ak.cmdIcons.invisible = "eye-off"
-        ak.cmdIcons.uninvis = "eye"
-        ak.cmdIcons.uninvisible = "eye"
-        ak.cmdIcons.vis = "eye"
-        ak.cmdIcons.visible = "eye"
-    end
-
-    -- 3B. Patch CoreGui.AKAdmin2 Movement Tab (WalkSpeed sync + CFrame Speed Slider Card) & Commands Tab
-    local gui = findGui("AKAdmin2")
-    if not gui then return true end
-    if gui:GetAttribute("_AKPlusCardsInjected") then
-        return true
-    end
-
-    local wsCard, movSf
-    for _, d in ipairs(gui:GetDescendants()) do
-        if d:IsA("TextLabel") and d.Text == "WalkSpeed" and d.Parent and d.Parent:IsA("Frame") then
-            wsCard = d.Parent
-            movSf = wsCard.Parent
-            break
-        end
-    end
-
-    if wsCard and movSf and movSf:IsA("ScrollingFrame") then
-        local wsParts = extractSliderParts(wsCard)
-        if wsParts and wsParts.fillFrame and wsParts.knobFrame and wsParts.valLbl then
-            -- Find internal curValBox & setSliderUI if accessible via getconnections
-            local wsCurValBox, wsOrigSetUI
-            if getconnections and wsParts.hitBtn and debug and debug.getupvalues then
-                for _, c in ipairs(getconnections(wsParts.hitBtn.InputBegan)) do
-                    if c.Function then
-                        for _, rawUv in pairs(debug.getupvalues(c.Function)) do
-                            local uv = unwrapTable(rawUv)
-                            if isPlainEnvTable(uv) and type(rawget(uv, 4)) == "function" then
-                                for _, rawUv2 in pairs(debug.getupvalues(rawget(uv, 4))) do
-                                    local uv2 = unwrapTable(rawUv2)
-                                    if isPlainEnvTable(uv2) and rawget(uv2, 2) == 16 and rawget(uv2, 3) == 300 then
-                                        wsCurValBox = unwrapTable(rawget(uv2, 5))
-                                        wsOrigSetUI = rawget(uv2, 6)
-                                        break
-                                    end
-                                end
-                            end
-                        end
-                    end
-                end
-            end
-
-            setWalkSpeedSliderUI = function(val)
-                local clamped = math.clamp(math.floor(val + 0.5), 16, 300)
-                if type(wsCurValBox) == "table" then
-                    wsCurValBox[239] = clamped
-                end
-                if type(wsOrigSetUI) == "function" then
-                    pcall(wsOrigSetUI, clamped)
-                else
-                    local alpha = math.clamp((clamped - 16) / (300 - 16), 0, 1)
-                    wsParts.fillFrame.Size = UDim2.new(alpha, 0, 1, 0)
-                    wsParts.knobFrame.Position = UDim2.new(alpha, 0, 0.5, 0)
-                    wsParts.valLbl.Text = tostring(clamped)
-                end
-            end
-        end
-
-        -- Inject native "CFrame Speed" Slider Card right below WalkSpeed (LayoutOrder = 3)
-        local existingCf = movSf:FindFirstChild("CFSpeedCard")
-        if existingCf then
-            existingCf:Destroy()
-        end
-
-        for _, ch in ipairs(movSf:GetChildren()) do
-            if ch:IsA("GuiObject") and ch ~= wsCard and ch.LayoutOrder >= 3 then
-                ch.LayoutOrder = ch.LayoutOrder + 1
-            end
-        end
-
-        local cfCard = trackInst(cloneGuiTree(wsCard))
-        if cfCard then
-            cfCard.Name = "CFSpeedCard"
-            cfCard.LayoutOrder = 3
-            cfCard.Parent = movSf
-
-            local cfParts = extractSliderParts(cfCard)
-            if cfParts then
-                if cfParts.titleLbl then
-                    cfParts.titleLbl.Text = "CFrame Speed"
-                end
-                if cfParts.iconImg and type(ak.setIcon) == "function" then
-                    pcall(ak.setIcon, cfParts.iconImg, "zap")
-                end
-
-                local minCf, maxCf = 0, 150
-                setCfSpeedSliderUI = function(val)
-                    local clamped = math.clamp(math.floor(val + 0.5), minCf, maxCf)
-                    local alpha = (clamped - minCf) / (maxCf - minCf)
-                    if cfParts.fillFrame then
-                        cfParts.fillFrame.Size = UDim2.new(alpha, 0, 1, 0)
-                    end
-                    if cfParts.knobFrame then
-                        cfParts.knobFrame.Position = UDim2.new(alpha, 0, 0.5, 0)
-                    end
-                    if cfParts.valLbl then
-                        cfParts.valLbl.Text = tostring(clamped)
-                    end
-                end
-
-                setCfSpeedSliderUI(cfSpeedVal)
-
-                if cfParts.hitBtn and cfParts.trackFrame then
-                    local dragging = false
-                    local function updateFromX(x)
-                        local absPos = cfParts.trackFrame.AbsolutePosition.X
-                        local absSize = math.max(1, cfParts.trackFrame.AbsoluteSize.X)
-                        local alpha = math.clamp((x - absPos) / absSize, 0, 1)
-                        local newVal = math.floor(minCf + alpha * (maxCf - minCf) + 0.5)
-                        setCfSpeedSliderUI(newVal)
-                        setCfSpeed(newVal, true)
-                    end
-
-                    trackConn(cfParts.hitBtn.InputBegan:Connect(function(input)
-                        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-                            dragging = true
-                            if cfParts.knobScale then
-                                cfParts.knobScale.Scale = 1.2
-                            end
-                            updateFromX(input.Position.X)
-                        end
-                    end))
-
-                    trackConn(UserInputService.InputChanged:Connect(function(input)
-                        if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
-                            updateFromX(input.Position.X)
-                        end
-                    end))
-
-                    trackConn(UserInputService.InputEnded:Connect(function(input)
-                        if dragging and (input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch) then
-                            dragging = false
-                            if cfParts.knobScale then
-                                cfParts.knobScale.Scale = 1
-                            end
-                        end
-                    end))
-                end
-            end
-        end
-    end
-
-    -- 3C. Add !speed and !cfspeed cards into the Commands tab ScrollingFrame
-    for _, sf in ipairs(gui:GetDescendants()) do
-        if sf:IsA("ScrollingFrame") and sf:FindFirstChild("!jump") then
-            local jmpCard = sf:FindFirstChild("!jump")
-            if jmpCard and jmpCard:FindFirstChild("Ttl") then
-                local rowClickFn
-                if getconnections and debug and debug.getupvalues then
-                    for _, b in ipairs(jmpCard:GetChildren()) do
-                        if b:IsA("TextButton") then
-                            for _, c in ipairs(getconnections(b.Activated)) do
-                                if c.Function then
-                                    for _, rawUv in pairs(debug.getupvalues(c.Function)) do
-                                        local uv = unwrapTable(rawUv)
-                                        if isPlainEnvTable(uv) and rawget(uv, 2) == "!jump" then
-                                            local t1 = unwrapTable(rawget(uv, 1))
-                                            if type(t1) == "table" and type(rawget(t1, 239)) == "function" then
-                                                rowClickFn = rawget(t1, 239)
-                                                break
-                                            end
-                                        end
-                                    end
-                                end
-                            end
-                        end
-                    end
-                end
-
-                local function addCmdCard(cmdName, descText, iconName, layoutOrder)
-                    local existing = sf:FindFirstChild(cmdName)
-                    if existing then existing:Destroy() end
-                    local card = trackInst(cloneGuiTree(jmpCard))
-                    if not card then return nil end
-                    card.Name = cmdName
-                    card.LayoutOrder = layoutOrder
-                    if card:FindFirstChild("Ttl") then
-                        card.Ttl.Text = cmdName
-                    end
-                    if card:FindFirstChild("Desc") then
-                        card.Desc.Text = descText
-                    end
-                    local iconFrame = card:FindFirstChildOfClass("Frame")
-                    local iconImg = iconFrame and iconFrame:FindFirstChildOfClass("ImageLabel")
-                    if iconImg and type(ak.setIcon) == "function" then
-                        pcall(ak.setIcon, iconImg, iconName)
-                    end
-                    for _, b in ipairs(card:GetChildren()) do
-                        if b:IsA("TextButton") then
-                            trackConn(b.Activated:Connect(function()
-                                if rowClickFn then
-                                    pcall(rowClickFn, cmdName)
-                                elseif type(ak.runBarCommandAsync) == "function" then
-                                    pcall(ak.runBarCommandAsync, cmdName)
-                                end
-                            end))
-                        end
-                    end
-                    card.Parent = sf
-                    return card
-                end
-
-                    local speedCard = addCmdCard("!speed", "Set character WalkSpeed [number, off]", "gauge", 81)
-                local cfSpeedCard = addCmdCard("!cfspeed", "Set CFrame movement speed [number, off]", "zap", 17)
-                local invisCard = addCmdCard("!invis", "Toggle FE invisibility with 0.5 ghost preview [on, off]", "eye-off", 45)
-                local unInvisCard = addCmdCard("!uninvis", "Become visible again at current ghost position", "eye", 95)
-                gui:SetAttribute("_AKPlusCardsInjected", true)
-
-                -- Hook Commands search TextBox so searching filters custom AKPlus commands too
-                for _, tb in ipairs(gui:GetDescendants()) do
-                    if tb:IsA("TextBox") and tb.PlaceholderText:find("Search") and tb.PlaceholderText:find("commands") then
-                        trackConn(tb:GetPropertyChangedSignal("Text"):Connect(function()
-                            local q = tb.Text:lower():gsub("^%s+", ""):gsub("%s+$", "")
-                            if speedCard and speedCard.Parent then
-                                speedCard.Visible = (q == "" or ("!speed walkspeed ws"):find(q, 1, true) ~= nil)
-                            end
-                            if cfSpeedCard and cfSpeedCard.Parent then
-                                cfSpeedCard.Visible = (q == "" or ("!cfspeed cframe speed"):find(q, 1, true) ~= nil)
-                            end
-                            if invisCard and invisCard.Parent then
-                                invisCard.Visible = (q == "" or ("!invis !invisible ghost stealth vanish"):find(q, 1, true) ~= nil)
-                            end
-                            if unInvisCard and unInvisCard.Parent then
-                                unInvisCard.Visible = (q == "" or ("!uninvis !uninvisible !vis !visible invis"):find(q, 1, true) ~= nil)
-                            end
-                        end))
-                        break
-                    end
-                end
-            end
-            break
         end
     end
 
@@ -4104,6 +4058,21 @@ local function enforceFpsSettings()
     local ak = genv.AKUI
     if type(ak) == "table" and type(ak.fpsApply) == "function" then
         pcall(ak.fpsApply)
+    end
+    if type(genv.getfpscap) == "function" and type(genv.setfpscap) == "function" then
+        local isXeno = (type(shared) == "table" and type(shared.__Xeno) == "table")
+            or (tostring(genv._AKExecName or ""):lower():find("xeno", 1, true) ~= nil)
+        local hasUserLowCap = type(ak) == "table"
+            and type(ak.prefs) == "table"
+            and ak.prefs.fpsUnlimited == false
+            and type(ak.prefs.fpsCap) == "number"
+            and ak.prefs.fpsCap <= (isXeno and 240 or 60)
+        if not hasUserLowCap then
+            local okG, cur = pcall(genv.getfpscap)
+            if okG and type(cur) == "number" and (cur < 0 or (cur > 0 and cur <= (isXeno and 240 or 60)) or cur >= 1e9) then
+                pcall(genv.setfpscap, 0)
+            end
+        end
     end
 end
 
@@ -4192,7 +4161,7 @@ local function hookAndApplyAll()
     end
     enforceFpsSettings()
     patchAKReanimSession()
-    patchMovementUIAndCommands()
+    patchRejoinCommandHooks()
 end
 
 genv._AKOnStage3Done = function()
@@ -4243,12 +4212,9 @@ do
 end
 
 genv._AKReanimBoosterUnload = function()
-    cfSpeedVal = 0
-    disableInvisible(true)
     pcall(function()
         local g2 = findGui("AKAdmin2")
         if g2 then
-            g2:SetAttribute("_AKPlusCardsInjected", nil)
             g2:SetAttribute("_AKPlusRejoinBtnsHooked", nil)
         end
     end)
@@ -4256,10 +4222,6 @@ genv._AKReanimBoosterUnload = function()
         pcall(function() activeConns[i]:Disconnect() end)
     end
     table.clear(activeConns)
-    for i = 1, #injectedInstances do
-        pcall(function() injectedInstances[i]:Destroy() end)
-    end
-    table.clear(injectedInstances)
     local ak = genv.AKUI
     if type(ak) == "table" then
         if genv._AKOrigReanimRun then
@@ -4273,6 +4235,13 @@ genv._AKReanimBoosterUnload = function()
         end
         if genv._AKOrigReexecGo then
             ak.reexecGo = genv._AKOrigReexecGo
+        end
+        if type(ak.builtInFns) == "table" then
+            for _, rjKey in ipairs({ "!rj", "!rejoin", "!serverhop" }) do
+                if genv["_AKOrigCmd_" .. rjKey] then
+                    ak.builtInFns[rjKey] = genv["_AKOrigCmd_" .. rjKey]
+                end
+            end
         end
     end
 end
