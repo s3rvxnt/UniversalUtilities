@@ -1,6 +1,6 @@
 -- ============================================================================
--- AKPlus: UNIVERSAL EXECUTOR SHIM & DYNAMIC ANTI-FREEZE GOVERNOR (v8.3.2)
--- AKPlusBuild:832
+-- AKPlus: UNIVERSAL EXECUTOR SHIM & DYNAMIC ANTI-FREEZE GOVERNOR (v8.3.3)
+-- AKPlusBuild:833
 -- Fixes mobile/sandboxed/desktop executors (Delta, Codex, Vega X, Hydrogen,
 -- Solara, Xeno, Madium, Helios, Potassium, Volt, etc.) + OmniTaskManager-aware
 -- dynamic frame-budget & auto-stride governor + sub-command VM cache + English
@@ -51,7 +51,7 @@ do
 end
 
 do
-    local AKPLUS_BUILD = 832
+    local AKPLUS_BUILD = 833
     local callerEnv = getfenv and getfenv(1) or nil
     local origEnv = getfenv and getfenv(0) or _G
     local g = (getgenv and getgenv()) or _G
@@ -94,8 +94,17 @@ do
     end
 
     if _akForceReload then
+        if type(g.AKUI) == "table" then
+            pcall(rawset, g.AKUI, "dead", true)
+            if type(g.AKUI.builtInFns) == "table" and type(g.AKUI.builtInFns["!destroy"]) == "function" then
+                pcall(g.AKUI.builtInFns["!destroy"])
+            end
+        end
+        g._RbxUITamperSnaps = nil
+        g._RbxUIAttachedAKUI = nil
+        g._RbxUISkipTranslatorRetry = nil
         if type(g._RbxUIReanimBoosterUnload) == "function" then
-            pcall(g._RbxUIReanimBoosterUnload)
+            pcall(g._RbxUIReanimBoosterUnload, true)
         end
         if type(g._RbxUIDestroyStatusPill) == "function" then
             pcall(g._RbxUIDestroyStatusPill)
@@ -115,6 +124,9 @@ do
         g._RbxUIWrappedReanimRun = nil
         g._RbxUIWrappedReexecGo = nil
         g._RbxUIWrapped_vcRun = nil
+        g._RbxUITamperSnaps = nil
+        g._RbxUIAttachedAKUI = nil
+        g._RbxUISkipTranslatorRetry = nil
         g._RbxUIWrapped_vcBuild = nil
         g["_RbxUIWrapped_!rj"] = nil
         g["_RbxUIWrapped_!rejoin"] = nil
@@ -139,6 +151,9 @@ do
         g._RbxUIWrappedReanimRun = nil
         g._RbxUIWrappedReexecGo = nil
         g._RbxUIWrapped_vcRun = nil
+        g._RbxUITamperSnaps = nil
+        g._RbxUIAttachedAKUI = nil
+        g._RbxUISkipTranslatorRetry = nil
         g._RbxUIWrapped_vcBuild = nil
         g["_RbxUIWrapped_!rj"] = nil
         g["_RbxUIWrapped_!rejoin"] = nil
@@ -1259,36 +1274,298 @@ do
         end
     end
 
+    local function findTamperSnapshots(ak)
+        if type(ak) ~= "table" then return nil, nil end
+        local bf = rawget(ak, "builtInFns")
+        local cached = g._RbxUITamperSnaps
+        if type(cached) == "table" and cached.ak == ak and (bf == nil or cached.bf == bf) then
+            if cached.snapFns ~= nil or cached.snapBuilt ~= nil then
+                return cached.snapFns, cached.snapBuilt
+            end
+        end
+        local gcFn = (type(getgc) == "function" and getgc) or (type(g.getgc) == "function" and g.getgc)
+        if type(gcFn) ~= "function" then return nil, nil end
+        local gu = (type(rawDbg) == "table" and type(rawDbg.getupvalues) == "function" and rawDbg.getupvalues)
+            or (type(getupvalues) == "function" and getupvalues)
+            or (type(g.getupvalues) == "function" and g.getupvalues)
+            or (type(debug) == "table" and type(debug.getupvalues) == "function" and debug.getupvalues)
+        if type(gu) ~= "function" then
+            local gu1 = (type(rawDbg) == "table" and type(rawDbg.getupvalue) == "function" and rawDbg.getupvalue)
+                or (type(getupvalue) == "function" and getupvalue)
+                or (type(g.getupvalue) == "function" and g.getupvalue)
+                or (type(debug) == "table" and type(debug.getupvalue) == "function" and debug.getupvalue)
+            if type(gu1) ~= "function" then return nil, nil end
+            gu = function(fn)
+                local out = {}
+                for idx = 1, 24 do
+                    local pk = { pcall(gu1, fn, idx) }
+                    if not pk[1] or pk[2] == nil then break end
+                    out[#out + 1] = (#pk >= 3 or type(pk[2]) == "string") and pk[3] or pk[2]
+                end
+                return out
+            end
+        end
+        local okGc, gcList = pcall(gcFn, false)
+        if not okGc or type(gcList) ~= "table" then return nil, nil end
+
+        local akTamper = rawget(ak, "tamper")
+        local bfJump = type(bf) == "table" and rawget(bf, "!jump") or nil
+        local snapFns, snapBuilt
+
+        local function checkCandTbl(cand)
+            if type(cand) ~= "table" then return end
+            if not snapFns and cand ~= ak then
+                if (akTamper and rawget(cand, "tamper") == akTamper)
+                    or (rawget(cand, "trHook") ~= nil and type(rawget(cand, "reanimRun")) == "function" and type(rawget(cand, "vcRun")) == "function")
+                then
+                    snapFns = cand
+                end
+            end
+            if not snapBuilt and type(bf) == "table" and cand ~= bf then
+                if (bfJump and rawget(cand, "!jump") == bfJump and type(rawget(cand, "!rj")) == "function")
+                    or (type(rawget(cand, "!rj")) == "function" and type(rawget(cand, "!rejoin")) == "function" and type(rawget(cand, "!serverhop")) == "function")
+                then
+                    snapBuilt = cand
+                end
+            end
+        end
+
+        for i = 1, #gcList do
+            local fn = gcList[i]
+            if type(fn) == "function" then
+                local okU, uvs = pcall(gu, fn)
+                if okU and type(uvs) == "table" then
+                    for j = 1, 32 do
+                        local uv = rawget(uvs, j)
+                        if type(uv) == "table" then
+                            checkCandTbl(uv)
+                            local nuv = #uv
+                            if nuv > 0 and nuv <= 16 then
+                                for k = 1, nuv do
+                                    checkCandTbl(rawget(uv, k))
+                                end
+                            end
+                        end
+                        if snapFns and (type(bf) ~= "table" or snapBuilt) then
+                            break
+                        end
+                    end
+                end
+                if snapFns and (type(bf) ~= "table" or snapBuilt) then
+                    break
+                end
+            end
+        end
+
+        if snapFns or snapBuilt then
+            g._RbxUITamperSnaps = { ak = ak, bf = bf, snapFns = snapFns, snapBuilt = snapBuilt }
+        end
+        return snapFns, snapBuilt
+    end
+
+    local function safeSetAkField(ak, tbl, key, newVal, isBuiltIn)
+        if type(ak) ~= "table" or type(tbl) ~= "table" then return false end
+        if rawget(tbl, key) == newVal then return true end
+        local snapFns, snapBuilt = nil, nil
+        local hasTamperFn = (type(rawget(ak, "tamper")) == "function")
+        if hasTamperFn then
+            snapFns, snapBuilt = findTamperSnapshots(ak)
+        end
+        local tamperActive = hasTamperFn
+            and (snapFns ~= nil or snapBuilt ~= nil or rawget(ak, "initDone") == true)
+        if tamperActive then
+            local snapTbl = isBuiltIn and snapBuilt or snapFns
+            if type(snapTbl) == "table" then
+                if rawget(snapTbl, key) ~= nil then
+                    pcall(rawset, snapTbl, key, newVal)
+                end
+                pcall(rawset, tbl, key, newVal)
+                return true
+            end
+            -- Tamper watchdog is active and cannot be synced (e.g. no getgc on vanilla reload); avoid popup
+            return false
+        end
+        pcall(rawset, tbl, key, newVal)
+        return true
+    end
+    g._RbxUISafeSetAkField = safeSetAkField
+    g._RbxUIFindTamperSnaps = findTamperSnapshots
+
+    local akKeyWrappers = g._RbxUIAkKeyWrappers
+    if type(akKeyWrappers) ~= "table" then
+        akKeyWrappers = {}
+        g._RbxUIAkKeyWrappers = akKeyWrappers
+    end
+    akKeyWrappers.trHook = function(ak, orig)
+        if orig == g._RbxUIWrappedTrHook then return orig end
+        g._RbxUIOrigTrHook = orig
+        local wrapped = function(inst, ...)
+            local lang = (type(ak.prefs) == "table" and ak.prefs.lang) or "en"
+            if lang == "en" then
+                if ak.trLibOn then ak.trLibOn = false end
+                return nil
+            end
+            if not ak.trLibOn then ak.trLibOn = true end
+            return orig(inst, ...)
+        end
+        g._RbxUIWrappedTrHook = wrapped
+        return wrapped
+    end
+    akKeyWrappers.trLiveCand = function(ak, orig)
+        if orig == g._RbxUIWrappedTrLive then return orig end
+        g._RbxUIOrigTrLive = orig
+        local emptyTbl = {}
+        local wrapped = function(...)
+            local lang = (type(ak.prefs) == "table" and ak.prefs.lang) or "en"
+            if lang == "en" then
+                return emptyTbl
+            end
+            return orig(...)
+        end
+        g._RbxUIWrappedTrLive = wrapped
+        return wrapped
+    end
+
+    local function stripAkInitMetatables(ak)
+        if type(ak) ~= "table" then return end
+        local akMt = g._RbxUIAkInitMt
+        if akMt and getmetatable(ak) == akMt then
+            pcall(setmetatable, ak, nil)
+        end
+        local bf = rawget(ak, "builtInFns")
+        local bfMt = g._RbxUIBfInitMt
+        if type(bf) == "table" and bfMt and getmetatable(bf) == bfMt then
+            pcall(setmetatable, bf, nil)
+        end
+    end
+    g._RbxUIStripInitMt = stripAkInitMetatables
+
+    local function wrapBuiltInFnsExisting(ak, bf)
+        if type(ak) ~= "table" or type(bf) ~= "table" then return end
+        local rjWrapper = akKeyWrappers["!rj"]
+        if type(rjWrapper) == "function" then
+            for _, rjKey in ipairs({ "!rj", "!rejoin", "!serverhop" }) do
+                local cur = rawget(bf, rjKey)
+                if type(cur) == "function" and cur ~= g["_RbxUIWrapped_" .. rjKey] then
+                    local wrapped = rjWrapper(ak, cur, rjKey)
+                    if type(wrapped) == "function" then
+                        safeSetAkField(ak, bf, rjKey, wrapped, true)
+                    end
+                end
+            end
+        end
+    end
+
+    local function attachBuiltInFnsProxy(ak, bf)
+        if type(ak) ~= "table" or type(bf) ~= "table" then return end
+        wrapBuiltInFnsExisting(ak, bf)
+        if rawget(ak, "initDone") == true then return end
+        if getmetatable(bf) == nil then
+            local bfMt = g._RbxUIBfInitMt
+            if type(bfMt) ~= "table" then
+                bfMt = {
+                    __newindex = function(t, k, v)
+                        local curAk = g.AKUI
+                        local rjW = akKeyWrappers["!rj"]
+                        if type(curAk) == "table"
+                            and (k == "!rj" or k == "!rejoin" or k == "!serverhop")
+                            and type(v) == "function"
+                            and type(rjW) == "function"
+                            and v ~= g["_RbxUIWrapped_" .. k]
+                        then
+                            local w = rjW(curAk, v, k)
+                            if type(w) == "function" then
+                                v = w
+                            end
+                        end
+                        rawset(t, k, v)
+                    end
+                }
+                g._RbxUIBfInitMt = bfMt
+            end
+            pcall(setmetatable, bf, bfMt)
+        end
+    end
+
+    local function wrapAkExistingTargets(ak)
+        if type(ak) ~= "table" then return end
+        for _, key in ipairs({ "trHook", "trLiveCand", "reanimRun", "vcRun", "vcBuild", "reexecGo" }) do
+            local wFn = akKeyWrappers[key]
+            local cur = rawget(ak, key)
+            if type(wFn) == "function" and type(cur) == "function" then
+                local wrapped = wFn(ak, cur, key)
+                if type(wrapped) == "function" and wrapped ~= cur then
+                    safeSetAkField(ak, ak, key, wrapped, false)
+                end
+            end
+        end
+        local bf = rawget(ak, "builtInFns")
+        if type(bf) == "table" then
+            attachBuiltInFnsProxy(ak, bf)
+        end
+        local lang = (type(ak.prefs) == "table" and ak.prefs.lang) or "en"
+        if lang == "en" and ak.trLibOn == true then
+            ak.trLibOn = false
+        end
+    end
+
+    local function attachAkPreSnapshotHooks(ak)
+        if type(ak) ~= "table" then return end
+        g._RbxUIAttachedAKUI = ak
+        wrapAkExistingTargets(ak)
+        if rawget(ak, "initDone") == true then
+            stripAkInitMetatables(ak)
+            return
+        end
+        if getmetatable(ak) == nil then
+            local akMt = g._RbxUIAkInitMt
+            if type(akMt) ~= "table" then
+                akMt = {
+                    __newindex = function(t, k, v)
+                        if k == "initDone" and v == true then
+                            wrapAkExistingTargets(t)
+                            stripAkInitMetatables(t)
+                            rawset(t, k, v)
+                            return
+                        end
+                        if k == "builtInFns" and type(v) == "table" then
+                            attachBuiltInFnsProxy(t, v)
+                            rawset(t, k, v)
+                            return
+                        end
+                        local wFn = akKeyWrappers[k]
+                        if type(wFn) == "function" and type(v) == "function" then
+                            local w = wFn(t, v, k)
+                            if type(w) == "function" then
+                                v = w
+                            end
+                        end
+                        rawset(t, k, v)
+                    end
+                }
+                g._RbxUIAkInitMt = akMt
+            end
+            pcall(setmetatable, ak, akMt)
+        end
+    end
+    g._RbxUIAttachAkHooks = attachAkPreSnapshotHooks
+
     local function patchAkTranslator(ak)
         if type(ak) ~= "table" then return end
-        if type(ak.trHook) == "function" and ak.trHook ~= g._RbxUIWrappedTrHook then
-            g._RbxUIOrigTrHook = ak.trHook
-            local orig = ak.trHook
-            local wrapped = function(inst, ...)
-                local lang = (type(ak.prefs) == "table" and ak.prefs.lang) or "en"
-                if lang == "en" then
-                    if ak.trLibOn then ak.trLibOn = false end
-                    return nil
-                end
-                if not ak.trLibOn then ak.trLibOn = true end
-                return orig(inst, ...)
-            end
-            g._RbxUIWrappedTrHook = wrapped
-            ak.trHook = wrapped
+        if rawget(ak, "initDone") ~= true then
+            attachAkPreSnapshotHooks(ak)
+            return
         end
-        if type(ak.trLiveCand) == "function" and ak.trLiveCand ~= g._RbxUIWrappedTrLive then
-            g._RbxUIOrigTrLive = ak.trLiveCand
-            local orig = ak.trLiveCand
-            local emptyTbl = {}
-            local wrapped = function(...)
-                local lang = (type(ak.prefs) == "table" and ak.prefs.lang) or "en"
-                if lang == "en" then
-                    return emptyTbl
+        stripAkInitMetatables(ak)
+        for _, key in ipairs({ "trHook", "trLiveCand" }) do
+            local wFn = akKeyWrappers[key]
+            local cur = rawget(ak, key)
+            if type(wFn) == "function" and type(cur) == "function" then
+                local wrapped = wFn(ak, cur, key)
+                if type(wrapped) == "function" and wrapped ~= cur then
+                    safeSetAkField(ak, ak, key, wrapped, false)
                 end
-                return orig(...)
             end
-            g._RbxUIWrappedTrLive = wrapped
-            ak.trLiveCand = wrapped
         end
         local lang = (type(ak.prefs) == "table" and ak.prefs.lang) or "en"
         if lang == "en" and ak.trLibOn == true then
@@ -1299,15 +1576,36 @@ do
 
     local function updatePill(dt)
         local now = os.clock()
-        if not hasError and type(g.AKUI) == "table"
-            and (g.AKUI.trHook ~= g._RbxUIWrappedTrHook or g.AKUI.trLiveCand ~= g._RbxUIWrappedTrLive) then
-            pcall(patchAkTranslator, g.AKUI)
+        local akCur = g.AKUI
+        if not hasError and type(akCur) == "table" then
+            if rawget(akCur, "initDone") ~= true then
+                if g._RbxUIAttachedAKUI ~= akCur
+                    or getmetatable(akCur) ~= g._RbxUIAkInitMt
+                    or akCur.trHook ~= g._RbxUIWrappedTrHook
+                    or akCur.trLiveCand ~= g._RbxUIWrappedTrLive
+                then
+                    pcall(attachAkPreSnapshotHooks, akCur)
+                end
+            else
+                stripAkInitMetatables(akCur)
+                if (akCur.trHook ~= g._RbxUIWrappedTrHook or akCur.trLiveCand ~= g._RbxUIWrappedTrLive)
+                    and g._RbxUISkipTranslatorRetry ~= akCur
+                then
+                    pcall(patchAkTranslator, akCur)
+                    if akCur.trHook ~= g._RbxUIWrappedTrHook and type(rawget(akCur, "tamper")) == "function" then
+                        g._RbxUISkipTranslatorRetry = akCur
+                    end
+                end
+            end
         end
         if not hasError and (now - lastUiCheck > 0.035) then
             lastUiCheck = now
             pcall(function()
                 if type(g.AKUI) == "table" then
-                    patchAkTranslator(g.AKUI)
+                    local lang = (type(g.AKUI.prefs) == "table" and g.AKUI.prefs.lang) or "en"
+                    if lang == "en" and g.AKUI.trLibOn == true then
+                        g.AKUI.trLibOn = false
+                    end
                     local kc = 0
                     for k, _ in pairs(g.AKUI) do
                         kc = kc + 1
@@ -2358,7 +2656,7 @@ do
 
     -- Multi-hop teleport persistence helper + scoped CoreGui proxy for fast vcRun/vcBuild scans
     local AKPLUS_TELEPORT_CODE = [[
--- AKPlusBuild:832
+-- AKPlusBuild:833
 local _g = (getgenv and getgenv()) or _G
 do
     local _isf = isfile or _g.isfile
@@ -3274,6 +3572,9 @@ end)
                 return scopedGameProxy
             end
             local v = g[k]
+            if k == "AKUI" and type(v) == "table" and g._RbxUIAttachedAKUI ~= v then
+                pcall(attachAkPreSnapshotHooks, v)
+            end
             if v ~= nil then return v end
             if callerEnv then
                 v = callerEnv[k]
@@ -3286,7 +3587,7 @@ end)
             pcall(function() g[k] = v end)
             pcall(function() origEnv[k] = v end)
             if k == "AKUI" and type(v) == "table" then
-                pcall(patchAkTranslator, v)
+                pcall(attachAkPreSnapshotHooks, v)
             end
         end
     })
@@ -4020,15 +4321,21 @@ end
 
 local function runAKPlusReload()
     task.spawn(function()
+        local ak = genv.AKUI
+        if type(ak) == "table" then
+            pcall(rawset, ak, "dead", true)
+            if type(ak.builtInFns) == "table" and type(ak.builtInFns["!destroy"]) == "function" then
+                pcall(ak.builtInFns["!destroy"])
+            end
+        end
+        genv._RbxUITamperSnaps = nil
+        genv._RbxUIAttachedAKUI = nil
+        genv._RbxUISkipTranslatorRetry = nil
         if genv._RbxUIReanimBoosterUnload then
-            pcall(genv._RbxUIReanimBoosterUnload)
+            pcall(genv._RbxUIReanimBoosterUnload, true)
         end
         if type(genv._RbxUIDestroyStatusPill) == "function" then
             pcall(genv._RbxUIDestroyStatusPill)
-        end
-        local ak = genv.AKUI
-        if type(ak) == "table" and type(ak.builtInFns) == "table" and type(ak.builtInFns["!destroy"]) == "function" then
-            pcall(ak.builtInFns["!destroy"])
         end
         pcall(function()
             local g1 = findGui("AKAdmin2")
@@ -4147,29 +4454,97 @@ local function runAKPlusReload()
 end
 genv._RbxUITriggerReload = runAKPlusReload
 
+do
+    local kw = genv._RbxUIAkKeyWrappers
+    if type(kw) ~= "table" then
+        kw = {}
+        genv._RbxUIAkKeyWrappers = kw
+    end
+    kw.reanimRun = function(ak, origRun)
+        if origRun == genv._RbxUIWrappedReanimRun then return origRun end
+        genv._RbxUIOrigReanimRun = origRun
+        local wrappedRun = function(...)
+            local r = origRun(...)
+            task.defer(patchAKReanimSession)
+            return r
+        end
+        genv._RbxUIWrappedReanimRun = wrappedRun
+        return wrappedRun
+    end
+    local function makeVcWrapper(ak, origVcFn, vcKey)
+        if origVcFn == genv["_RbxUIWrapped_" .. vcKey] then return origVcFn end
+        genv["_RbxUIOrig_" .. vcKey] = origVcFn
+        local wrappedVcFn = function(...)
+            local th = coroutine and coroutine.running and coroutine.running() or nil
+            local vct = genv._RbxUIVcThreads
+            if th and type(vct) == "table" then
+                vct[th] = true
+            end
+            local okCall, r1, r2, r3 = pcall(origVcFn, ...)
+            if th and type(vct) == "table" then
+                vct[th] = nil
+            end
+            if not okCall then
+                error(r1, 2)
+            end
+            return r1, r2, r3
+        end
+        genv["_RbxUIWrapped_" .. vcKey] = wrappedVcFn
+        return wrappedVcFn
+    end
+    kw.vcRun = makeVcWrapper
+    kw.vcBuild = makeVcWrapper
+    kw.reexecGo = function(ak, origReexec)
+        if origReexec == genv._RbxUIWrappedReexecGo then return origReexec end
+        genv._RbxUIOrigReexecGo = origReexec
+        local wrappedReexec = function()
+            runAKPlusReload()
+        end
+        genv._RbxUIWrappedReexecGo = wrappedReexec
+        return wrappedReexec
+    end
+    kw["!rj"] = function(ak, origRj, rjKey)
+        if origRj == genv["_RbxUIWrapped_" .. rjKey] then return origRj end
+        genv["_RbxUIOrigCmd_" .. rjKey] = origRj
+        local wrappedRj = function(...)
+            rearmTeleportBeforeHop()
+            return origRj(...)
+        end
+        genv["_RbxUIWrapped_" .. rjKey] = wrappedRj
+        return wrappedRj
+    end
+    if type(genv.AKUI) == "table" and rawget(genv.AKUI, "initDone") ~= true and type(genv._RbxUIAttachAkHooks) == "function" then
+        pcall(genv._RbxUIAttachAkHooks, genv.AKUI)
+    end
+end
+
 local function patchRejoinCommandHooks()
     local ak = genv.AKUI
     if type(ak) ~= "table" then return false end
 
-    local function wrapRejoinEntries(cmds)
-        if type(cmds) ~= "table" then return end
+    local safeSet = genv._RbxUISafeSetAkField
+    local kw = genv._RbxUIAkKeyWrappers
+    local rjWrapper = type(kw) == "table" and kw["!rj"] or nil
+
+    local function wrapRejoinEntries(cmds, isBuiltIn)
+        if type(cmds) ~= "table" or type(rjWrapper) ~= "function" then return end
         for _, rjKey in ipairs({ "!rj", "!rejoin", "!serverhop" }) do
-            local curFn = cmds[rjKey]
+            local curFn = rawget(cmds, rjKey)
             if type(curFn) == "function" and curFn ~= genv["_RbxUIWrapped_" .. rjKey] then
-                genv["_RbxUIOrigCmd_" .. rjKey] = curFn
-                local origRj = curFn
-                local wrappedRj = function(...)
-                    rearmTeleportBeforeHop()
-                    return origRj(...)
+                local wrappedRj = rjWrapper(ak, curFn, rjKey)
+                if type(wrappedRj) == "function" then
+                    if isBuiltIn and type(safeSet) == "function" then
+                        safeSet(ak, cmds, rjKey, wrappedRj, true)
+                    else
+                        cmds[rjKey] = wrappedRj
+                    end
                 end
-                genv["_RbxUIWrapped_" .. rjKey] = wrappedRj
-                cmds[rjKey] = wrappedRj
             end
         end
     end
 
     if type(ak.builtInFns) == "table" then
-        wrapRejoinEntries(ak.builtInFns)
+        wrapRejoinEntries(ak.builtInFns, true)
     end
 
     if type(ak.macRunOne0) == "function" and debug and debug.getupvalues then
@@ -4177,10 +4552,21 @@ local function patchRejoinCommandHooks()
             local u16 = unwrapTable(rawUv)
             if isPlainEnvTable(u16) then
                 local b1 = unwrapTable(rawget(u16, 1))
-                local cmds = type(b1) == "table" and unwrapTable(rawget(b1, 239))
-                if type(cmds) == "table" then
-                    wrapRejoinEntries(cmds)
-                    break
+                if type(b1) == "table" then
+                    local cmds = unwrapTable(rawget(b1, 248)) or unwrapTable(rawget(b1, 239))
+                    if type(cmds) ~= "table" then
+                        for idx = 220, 270 do
+                            local cand = unwrapTable(rawget(b1, idx))
+                            if type(cand) == "table" and (cand == ak.builtInFns or type(rawget(cand, "!rj")) == "function") then
+                                cmds = cand
+                                break
+                            end
+                        end
+                    end
+                    if type(cmds) == "table" then
+                        wrapRejoinEntries(cmds, cmds == ak.builtInFns)
+                        break
+                    end
                 end
             end
         end
@@ -4225,55 +4611,33 @@ end
 local function hookAndApplyAll()
     local ak = genv.AKUI
     if type(ak) == "table" then
-        if type(genv._RbxUIPatchTranslator) == "function" then
-            pcall(genv._RbxUIPatchTranslator, ak)
-        end
-
-        if type(ak.reanimRun) == "function" and ak.reanimRun ~= genv._RbxUIWrappedReanimRun then
-            genv._RbxUIOrigReanimRun = ak.reanimRun
-            local origRun = ak.reanimRun
-            local wrappedRun = function(...)
-                local r = origRun(...)
-                task.defer(patchAKReanimSession)
-                return r
+        if rawget(ak, "initDone") ~= true and type(genv._RbxUIAttachAkHooks) == "function" then
+            pcall(genv._RbxUIAttachAkHooks, ak)
+        else
+            if type(genv._RbxUIStripInitMt) == "function" then
+                pcall(genv._RbxUIStripInitMt, ak)
             end
-            genv._RbxUIWrappedReanimRun = wrappedRun
-            ak.reanimRun = wrappedRun
-        end
-
-        -- Scoped CoreGui scan accelerator for !antivcban (vcRun / vcBuild)
-        for _, vcKey in ipairs({ "vcRun", "vcBuild" }) do
-            if type(ak[vcKey]) == "function" and ak[vcKey] ~= genv["_RbxUIWrapped_" .. vcKey] then
-                genv["_RbxUIOrig_" .. vcKey] = ak[vcKey]
-                local origVcFn = ak[vcKey]
-                local wrappedVcFn = function(...)
-                    local th = coroutine and coroutine.running and coroutine.running() or nil
-                    local vct = genv._RbxUIVcThreads
-                    if th and type(vct) == "table" then
-                        vct[th] = true
+            if type(genv._RbxUIPatchTranslator) == "function" then
+                pcall(genv._RbxUIPatchTranslator, ak)
+            end
+            local safeSet = genv._RbxUISafeSetAkField
+            local kw = genv._RbxUIAkKeyWrappers
+            if type(kw) == "table" then
+                for _, key in ipairs({ "reanimRun", "vcRun", "vcBuild", "reexecGo" }) do
+                    local wFn = kw[key]
+                    local cur = rawget(ak, key)
+                    if type(wFn) == "function" and type(cur) == "function" then
+                        local wrapped = wFn(ak, cur, key)
+                        if type(wrapped) == "function" and wrapped ~= cur then
+                            if type(safeSet) == "function" then
+                                safeSet(ak, ak, key, wrapped, false)
+                            else
+                                ak[key] = wrapped
+                            end
+                        end
                     end
-                    local okCall, r1, r2, r3 = pcall(origVcFn, ...)
-                    if th and type(vct) == "table" then
-                        vct[th] = nil
-                    end
-                    if not okCall then
-                        error(r1, 2)
-                    end
-                    return r1, r2, r3
                 end
-                genv["_RbxUIWrapped_" .. vcKey] = wrappedVcFn
-                ak[vcKey] = wrappedVcFn
             end
-        end
-
-        -- Hook AKUI.reexecGo so clicking Re-execute reloads AKPlus instead of vanilla AK Admin
-        if type(ak.reexecGo) == "function" and ak.reexecGo ~= genv._RbxUIWrappedReexecGo then
-            genv._RbxUIOrigReexecGo = ak.reexecGo
-            local wrappedReexec = function()
-                runAKPlusReload()
-            end
-            genv._RbxUIWrappedReexecGo = wrappedReexec
-            ak.reexecGo = wrappedReexec
         end
 
         -- Hook any UI Rejoin buttons directly as well
@@ -4338,9 +4702,13 @@ do
             local deadline = os.clock() + 60
             while os.clock() < deadline do
                 local g2 = findGui("AKAdmin2")
-                if type(genv.AKUI) == "table" and g2
-                    and (genv.AKUI.initDone or (g2:FindFirstChild("!jump", true) and not findGui("AKAuthGui"))) then
-                    break
+                if type(genv.AKUI) == "table" and g2 then
+                    if rawget(genv.AKUI, "initDone") ~= true and type(genv._RbxUIAttachAkHooks) == "function" then
+                        pcall(genv._RbxUIAttachAkHooks, genv.AKUI)
+                    end
+                    if genv.AKUI.initDone or (g2:FindFirstChild("!jump", true) and not findGui("AKAuthGui")) then
+                        break
+                    end
                 end
                 rawW(0.05)
             end
@@ -4353,7 +4721,7 @@ do
     end
 end
 
-genv._RbxUIReanimBoosterUnload = function()
+genv._RbxUIReanimBoosterUnload = function(isReload)
     pcall(function()
         local g2 = findGui("AKAdmin2")
         if g2 then
@@ -4365,23 +4733,35 @@ genv._RbxUIReanimBoosterUnload = function()
     end
     table.clear(activeConns)
     local ak = genv.AKUI
-    if type(ak) == "table" then
-        if genv._RbxUIOrigReanimRun then
-            ak.reanimRun = genv._RbxUIOrigReanimRun
+    if type(ak) == "table" and not isReload and not rawget(ak, "dead") then
+        if type(genv._RbxUIStripInitMt) == "function" then
+            pcall(genv._RbxUIStripInitMt, ak)
         end
-        if genv._RbxUIOrig_vcRun then
-            ak.vcRun = genv._RbxUIOrig_vcRun
-        end
-        if genv._RbxUIOrig_vcBuild then
-            ak.vcBuild = genv._RbxUIOrig_vcBuild
-        end
-        if genv._RbxUIOrigReexecGo then
-            ak.reexecGo = genv._RbxUIOrigReexecGo
+        local safeSet = genv._RbxUISafeSetAkField
+        local restorePairs = {
+            { "reanimRun", genv._RbxUIOrigReanimRun },
+            { "vcRun", genv._RbxUIOrig_vcRun },
+            { "vcBuild", genv._RbxUIOrig_vcBuild },
+            { "reexecGo", genv._RbxUIOrigReexecGo },
+        }
+        for _, item in ipairs(restorePairs) do
+            if type(item[2]) == "function" then
+                if type(safeSet) == "function" then
+                    safeSet(ak, ak, item[1], item[2], false)
+                elseif rawget(ak, "tamper") == nil then
+                    ak[item[1]] = item[2]
+                end
+            end
         end
         if type(ak.builtInFns) == "table" then
             for _, rjKey in ipairs({ "!rj", "!rejoin", "!serverhop" }) do
-                if genv["_RbxUIOrigCmd_" .. rjKey] then
-                    ak.builtInFns[rjKey] = genv["_RbxUIOrigCmd_" .. rjKey]
+                local origCmd = genv["_RbxUIOrigCmd_" .. rjKey]
+                if type(origCmd) == "function" then
+                    if type(safeSet) == "function" then
+                        safeSet(ak, ak.builtInFns, rjKey, origCmd, true)
+                    elseif rawget(ak, "tamper") == nil then
+                        ak.builtInFns[rjKey] = origCmd
+                    end
                 end
             end
         end
