@@ -1,6 +1,6 @@
 -- ============================================================================
--- AKPlus: UNIVERSAL EXECUTOR SHIM & DYNAMIC ANTI-FREEZE GOVERNOR (v8.3.3)
--- AKPlusBuild:833
+-- AKPlus: UNIVERSAL EXECUTOR SHIM & DYNAMIC ANTI-FREEZE GOVERNOR (v8.3.4)
+-- AKPlusBuild:834
 -- Fixes mobile/sandboxed/desktop executors (Delta, Codex, Vega X, Hydrogen,
 -- Solara, Xeno, Madium, Helios, Potassium, Volt, etc.) + OmniTaskManager-aware
 -- dynamic frame-budget & auto-stride governor + sub-command VM cache + English
@@ -42,6 +42,7 @@ do
     _gGuard._RbxUIForceReload = nil
     _akForceReload = (_forceReload == true)
     if not _akForceReload
+        and _gGuard._RbxUIPlusBuild == 834
         and _gGuard._RbxUIPlusLoadingDM == game
         and type(_gGuard._RbxUIPlusLoadingStart) == "number"
         and (os.clock() - _gGuard._RbxUIPlusLoadingStart) < 45
@@ -51,7 +52,7 @@ do
 end
 
 do
-    local AKPLUS_BUILD = 833
+    local AKPLUS_BUILD = 834
     local callerEnv = getfenv and getfenv(1) or nil
     local origEnv = getfenv and getfenv(0) or _G
     local g = (getgenv and getgenv()) or _G
@@ -160,6 +161,9 @@ do
         g["_RbxUIWrapped_!serverhop"] = nil
         local existingFullUi = findGui("AKAdmin2")
         if not (existingFullUi and existingFullUi:FindFirstChild("!jump", true)) then
+            if type(g._RbxUIDestroyStatusPill) == "function" then
+                pcall(g._RbxUIDestroyStatusPill)
+            end
             wipeStaleAkGlobals()
         end
     else
@@ -167,6 +171,9 @@ do
         g._RbxUIPlusDataModel = game
         local existingFullUi = findGui("AKAdmin2")
         if not (existingFullUi and existingFullUi:FindFirstChild("!jump", true)) then
+            if type(g._RbxUIDestroyStatusPill) == "function" then
+                pcall(g._RbxUIDestroyStatusPill)
+            end
             wipeStaleAkGlobals()
         end
     end
@@ -3344,7 +3351,7 @@ end)
         local canYield = (rawTaskWait ~= nil or (task and task.wait ~= nil))
             and (not coroutine or not coroutine.isyieldable or coroutine.isyieldable())
         if type(src) == "string" then
-            if src:find("DecompressBuffer", 1, true) then
+            if src:find("DecompressBuffer", 1, true) and not src:find("_RbxUILaunchStage1Env", 1, true) then
                 isStage2 = true
                 lastCheckpoint = "S2-Patch"
                 setStatus("[3/6] Decompressing Stage 2...")
@@ -3774,6 +3781,24 @@ end)
             lastCheckpoint = "HttpGetS1"
             local okRun, runErr = pcall(function()
                 local s1Src = game:HttpGet("https://absent.wtf/AKADMIN.lua")
+                if type(s1Src) == "string" then
+                    local rawS1 = s1Src:match("(return%(function%([^\n]-%[==%[LPS/.-%)%(%.%.%.%))")
+                    if rawS1 then
+                        s1Src = rawS1
+                    else
+                        local innerUrl = s1Src:match('loadstring%(game:HttpGet%("(https://[^"]+)"%)%)')
+                            or s1Src:match("loadstring%(game:HttpGet%('(https://[^']+)'%)%)")
+                        if innerUrl then
+                            lastCheckpoint = "HttpGetS3"
+                            setStatus("[3/6] Decompressing Stage 2...")
+                            fastWait()
+                            s1Src = game:HttpGet(innerUrl)
+                        elseif s1Src:find("_RbxUIPlusLoadingDM", 1, true) then
+                            g._RbxUIPlusLoadingDM = nil
+                            g._RbxUIPlusLoadingStart = nil
+                        end
+                    end
+                end
                 lastCheckpoint = "CompileS1"
                 local s1Fn, s1Err = akLoadstring(s1Src)
                 if not s1Fn then
