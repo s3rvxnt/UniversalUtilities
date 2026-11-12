@@ -1277,9 +1277,13 @@ do
     local function findTamperSnapshots(ak)
         if type(ak) ~= "table" then return nil, nil end
         local bf = rawget(ak, "builtInFns")
+        local akTamper = rawget(ak, "tamper")
         local cached = g._RbxUITamperSnaps
         if type(cached) == "table" and cached.ak == ak and (bf == nil or cached.bf == bf) then
-            if cached.snapFns ~= nil or cached.snapBuilt ~= nil then
+            if type(cached.snapFns) == "table"
+                and (akTamper == nil or rawget(cached.snapFns, "tamper") == akTamper)
+                and (type(bf) ~= "table" or type(cached.snapBuilt) == "table")
+            then
                 return cached.snapFns, cached.snapBuilt
             end
         end
@@ -1308,22 +1312,44 @@ do
         local okGc, gcList = pcall(gcFn, false)
         if not okGc or type(gcList) ~= "table" then return nil, nil end
 
-        local akTamper = rawget(ak, "tamper")
-        local bfJump = type(bf) == "table" and rawget(bf, "!jump") or nil
-        local snapFns, snapBuilt
+        local snapFns, snapBuilt, fallbackSnapFns
 
-        local function checkCandTbl(cand)
+        local function isAkUiShape(cand)
+            return rawget(cand, "prefs") ~= nil
+                or rawget(cand, "builtInFns") ~= nil
+                or rawget(cand, "initDone") ~= nil
+                or rawget(cand, "dead") ~= nil
+        end
+
+        local function isSameBuiltFn(cand, k)
+            if type(bf) ~= "table" then return false end
+            local bfv = rawget(bf, k)
+            return type(bfv) == "function" and rawget(cand, k) == bfv
+        end
+
+        local function checkCandTbl(cand, boxHasBf)
             if type(cand) ~= "table" then return end
-            if not snapFns and cand ~= ak then
-                if (akTamper and rawget(cand, "tamper") == akTamper)
-                    or (rawget(cand, "trHook") ~= nil and type(rawget(cand, "reanimRun")) == "function" and type(rawget(cand, "vcRun")) == "function")
-                then
+            if cand ~= ak and not isAkUiShape(cand) then
+                if not snapFns and akTamper and rawget(cand, "tamper") == akTamper then
                     snapFns = cand
+                elseif not fallbackSnapFns and (boxHasBf or not akTamper)
+                    and rawget(cand, "trHook") ~= nil
+                    and type(rawget(cand, "reanimRun")) == "function"
+                    and type(rawget(cand, "vcRun")) == "function"
+                then
+                    fallbackSnapFns = cand
                 end
             end
             if not snapBuilt and type(bf) == "table" and cand ~= bf then
-                if (bfJump and rawget(cand, "!jump") == bfJump and type(rawget(cand, "!rj")) == "function")
-                    or (type(rawget(cand, "!rj")) == "function" and type(rawget(cand, "!rejoin")) == "function" and type(rawget(cand, "!serverhop")) == "function")
+                if type(rawget(cand, "!rj")) == "function"
+                    and type(rawget(cand, "!rejoin")) == "function"
+                    and (
+                        boxHasBf
+                        or isSameBuiltFn(cand, "!destroy")
+                        or isSameBuiltFn(cand, "!jumppower")
+                        or isSameBuiltFn(cand, "!jump")
+                        or isSameBuiltFn(cand, "!serverhop")
+                    )
                 then
                     snapBuilt = cand
                 end
@@ -1338,11 +1364,20 @@ do
                     for j = 1, 32 do
                         local uv = rawget(uvs, j)
                         if type(uv) == "table" then
-                            checkCandTbl(uv)
+                            checkCandTbl(uv, false)
                             local nuv = #uv
                             if nuv > 0 and nuv <= 16 then
+                                local boxHasBf = false
+                                if type(bf) == "table" then
+                                    for k = 1, nuv do
+                                        if rawget(uv, k) == bf then
+                                            boxHasBf = true
+                                            break
+                                        end
+                                    end
+                                end
                                 for k = 1, nuv do
-                                    checkCandTbl(rawget(uv, k))
+                                    checkCandTbl(rawget(uv, k), boxHasBf)
                                 end
                             end
                         end
@@ -1356,6 +1391,7 @@ do
                 end
             end
         end
+        if not snapFns then snapFns = fallbackSnapFns end
 
         if snapFns or snapBuilt then
             g._RbxUITamperSnaps = { ak = ak, bf = bf, snapFns = snapFns, snapBuilt = snapBuilt }
