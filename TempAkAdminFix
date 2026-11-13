@@ -1,6 +1,6 @@
 -- ============================================================================
--- AKPlus: UNIVERSAL EXECUTOR SHIM & DYNAMIC ANTI-FREEZE GOVERNOR (v9.0.6)
--- AKPlusBuild:906
+-- AKPlus: UNIVERSAL EXECUTOR SHIM & DYNAMIC ANTI-FREEZE GOVERNOR (v9.0.7)
+-- AKPlusBuild:907
 -- Fixes mobile/sandboxed/desktop executors (Delta, Codex, Vega X, Hydrogen,
 -- Solara, Xeno, Madium, Helios, Potassium, Volt, etc.) + OmniTaskManager-aware
 -- dynamic frame-budget & auto-stride governor + sub-command VM cache + English
@@ -44,7 +44,7 @@ do
     _gGuard._RbxPlusForceReload = nil
     _akForceReload = (_forceReload == true)
     if not _akForceReload
-        and _gGuard._RbxPlusBuild == 906
+        and _gGuard._RbxPlusBuild == 907
         and _gGuard._RbxPlusLoadingDM == game
         and type(_gGuard._RbxPlusLoadingStart) == "number"
         and (os.clock() - _gGuard._RbxPlusLoadingStart) < 45
@@ -55,7 +55,7 @@ do
 end
 
 do
-    local AKPLUS_BUILD = 906
+    local AKPLUS_BUILD = 907
     local callerEnv = getfenv and getfenv(1) or nil
     local origEnv = getfenv and getfenv(0) or _G
     local g = (getgenv and getgenv()) or _G
@@ -129,6 +129,10 @@ do
         g._RbxPlusWrappedReexecGo = nil
         g._RbxPlusWrapped_cref = nil
         g._RbxPlusWrapped_vcScan = nil
+        g._RbxPlusWrapped_vcLevel = nil
+        g._RbxPlusWrapped_vcApply = nil
+        g._RbxPlusWrapped_vcMuted = nil
+        g._RbxPlusWrapped_vcDump = nil
         g._RbxPlusWrapped_vcRun = nil
         g._RbxPlusWrapped_vcBuild = nil
         g._RbxPlusCachedPluginCap = nil
@@ -157,6 +161,10 @@ do
         g._RbxPlusWrappedReexecGo = nil
         g._RbxPlusWrapped_cref = nil
         g._RbxPlusWrapped_vcScan = nil
+        g._RbxPlusWrapped_vcLevel = nil
+        g._RbxPlusWrapped_vcApply = nil
+        g._RbxPlusWrapped_vcMuted = nil
+        g._RbxPlusWrapped_vcDump = nil
         g._RbxPlusWrapped_vcRun = nil
         g._RbxPlusWrapped_vcBuild = nil
         g._RbxPlusCachedPluginCap = nil
@@ -569,6 +577,10 @@ do
     local normExecName = execName:lower():gsub("%s+", "")
     local isXenoExec = (xenoSrcEarly ~= nil) or (normExecName:find("xeno", 1, true) ~= nil)
     local needExecSpoof = isXenoExec or (normExecName:find("solara", 1, true) ~= nil)
+    g._RbxPlusCachedPluginCap = nil
+    g._RbxPlusIsLimitedCapExec = (shared ~= nil and type(shared.__Xeno) == "table")
+        or (normExecName:find("xeno", 1, true) ~= nil)
+        or (normExecName:find("solara", 1, true) ~= nil)
     local spoofIdentifyExec = needExecSpoof and c(function()
         return "Potassium", "1.8.0"
     end) or nil
@@ -2708,9 +2720,9 @@ do
                     if b == "n" then return "" end
                     if b == "a" then return 0, false end
                 end
-                local okR, r1, r2, r3, r4, r5, r6 = pcall(inf, lvl, b)
-                if not okR then return nil end
-                return r1, r2, r3, r4, r5, r6
+                local pk = table.pack(pcall(inf, lvl, b))
+                if not pk[1] then return nil end
+                return (unpack or table.unpack)(pk, 2, pk.n)
             end
             return throwAtCaller(...)
         end)
@@ -2788,7 +2800,7 @@ do
 
     -- Multi-hop teleport persistence helper + scoped CoreGui proxy for fast vcRun/vcBuild scans
     local AKPLUS_TELEPORT_CODE = [[
--- AKPlusBuild:906
+-- AKPlusBuild:907
 local _g = (getgenv and getgenv()) or _G
 do
     local _isf = isfile or _g.isfile
@@ -3403,13 +3415,23 @@ end)
     local function _RbxPlusGD(inst)
         if inst == nil then return {} end
         local ok, list = pcall(inst.GetDescendants, inst)
-        if not ok or type(list) ~= "table" then return {} end
+        if not ok or type(list) ~= "table" then
+            if not ok and tostring(list):find("lacking capability", 1, true) then
+                g._RbxPlusCachedPluginCap = false
+            end
+            return {}
+        end
         return filterReadableInstList(list)
     end
     local function _RbxPlusGC(inst)
         if inst == nil then return {} end
         local ok, list = pcall(inst.GetChildren, inst)
-        if not ok or type(list) ~= "table" then return {} end
+        if not ok or type(list) ~= "table" then
+            if not ok and tostring(list):find("lacking capability", 1, true) then
+                g._RbxPlusCachedPluginCap = false
+            end
+            return {}
+        end
         return filterReadableInstList(list)
     end
     g._RbxPlusGD = _RbxPlusGD
@@ -3784,14 +3806,14 @@ end)
                     if isStage3 and type(turboHooks) == "table" and type(turboHooks.onStage3Failed) == "function" then
                         local origS3 = fn
                         fn = function(...)
-                            local okE, r1, r2, r3, r4 = pcall(origS3, ...)
-                            if not okE then
+                            local res = table.pack(pcall(origS3, ...))
+                            if not res[1] then
                                 if not s3Done then
                                     pcall(turboHooks.onStage3Failed)
                                 end
-                                error(r1, 0)
+                                error(res[2], 0)
                             end
-                            return r1, r2, r3, r4
+                            return (unpack or table.unpack)(res, 2, res.n)
                         end
                         pcall(setfenv, fn, env)
                     elseif isSubVM and subSig and fn then
@@ -4607,66 +4629,68 @@ end)
 
         lastCheckpoint = "WaitClient"
         setStatus(initialBootMode == "teleport" and "[2/6] Loading turbo cache..." or "[2/6] Fetching AKADMIN.lua...")
-        task.spawn(function()
-            fastWait()
-            if coroutine and coroutine.running then
-                local th = coroutine.running()
-                if th then
-                    local ig = g._OmniIgnoredThreads
-                    if type(ig) ~= "table" then
-                        ig = setmetatable({}, { __mode = "k" })
-                        g._OmniIgnoredThreads = ig
-                    end
-                    ig[th] = true
-                end
-            end
-            local w = g._KernelOrigTaskWait or rawTaskWait or (task and task.wait)
-            if g._RbxPlusClientReadyDM ~= game then
-                local wasUnloaded = not game:IsLoaded()
-                if wasUnloaded then
-                    pcall(function() game.Loaded:Wait() end)
-                end
-                local tLp = os.clock()
-                while (not Players.LocalPlayer or game.PlaceId == 0) and (os.clock() - tLp < 15) do
-                    if w then pcall(w, 0.05) end
-                end
-                local lp = Players.LocalPlayer
-                local tUi = os.clock()
-                while os.clock() - tUi < 8 do
-                    local pg = lp and lp:FindFirstChildOfClass("PlayerGui")
-                    local cam = Workspace.CurrentCamera
-                    local vpOk = cam and cam.ViewportSize.X > 1 and cam.ViewportSize.Y > 1
-                    if pg and vpOk then break end
-                    if w then pcall(w, 0.05) end
-                end
-                if wasUnloaded then
-                    local isf = isfile or g.isfile
-                    local hasOmni = false
-                    if type(isf) == "function" then
-                        local okO, resO = pcall(isf, "Omni_Ledger.json")
-                        hasOmni = (okO and resO == true)
-                    end
-                    if not hasOmni then
-                        if w then pcall(w, 0.25) end
-                        pcall(function()
-                            RunService.Heartbeat:Wait()
-                        end)
+        g._RbxPlusPendingBootFn = function()
+            task.spawn(function()
+                fastWait()
+                if coroutine and coroutine.running then
+                    local th = coroutine.running()
+                    if th then
+                        local ig = g._OmniIgnoredThreads
+                        if type(ig) ~= "table" then
+                            ig = setmetatable({}, { __mode = "k" })
+                            g._OmniIgnoredThreads = ig
+                        end
+                        ig[th] = true
                     end
                 end
-                g._RbxPlusClientReadyDM = game
-                g._RbxPlusServerBoot = tostring(game.PlaceId) .. ":" .. tostring(game.JobId)
-            end
-            local okRun, runErr = pcall(function()
-                return runBootPipeline(initialBootMode)
+                local w = g._KernelOrigTaskWait or rawTaskWait or (task and task.wait)
+                if g._RbxPlusClientReadyDM ~= game then
+                    local wasUnloaded = not game:IsLoaded()
+                    if wasUnloaded then
+                        pcall(function() game.Loaded:Wait() end)
+                    end
+                    local tLp = os.clock()
+                    while (not Players.LocalPlayer or game.PlaceId == 0) and (os.clock() - tLp < 15) do
+                        if w then pcall(w, 0.05) end
+                    end
+                    local lp = Players.LocalPlayer
+                    local tUi = os.clock()
+                    while os.clock() - tUi < 8 do
+                        local pg = lp and lp:FindFirstChildOfClass("PlayerGui")
+                        local cam = Workspace.CurrentCamera
+                        local vpOk = cam and cam.ViewportSize.X > 1 and cam.ViewportSize.Y > 1
+                        if pg and vpOk then break end
+                        if w then pcall(w, 0.05) end
+                    end
+                    if wasUnloaded then
+                        local isf = isfile or g.isfile
+                        local hasOmni = false
+                        if type(isf) == "function" then
+                            local okO, resO = pcall(isf, "Omni_Ledger.json")
+                            hasOmni = (okO and resO == true)
+                        end
+                        if not hasOmni then
+                            if w then pcall(w, 0.25) end
+                            pcall(function()
+                                RunService.Heartbeat:Wait()
+                            end)
+                        end
+                    end
+                    g._RbxPlusClientReadyDM = game
+                    g._RbxPlusServerBoot = tostring(game.PlaceId) .. ":" .. tostring(game.JobId)
+                end
+                local okRun, runErr = pcall(function()
+                    return runBootPipeline(initialBootMode)
+                end)
+                if not okRun then
+                    if task and task.spawn then
+                        task.spawn(setError, runErr)
+                    else
+                        setError(runErr)
+                    end
+                end
             end)
-            if not okRun then
-                if task and task.spawn then
-                    task.spawn(setError, runErr)
-                else
-                    setError(runErr)
-                end
-            end
-        end)
+        end
     end
 end
 
@@ -5599,26 +5623,34 @@ do
     end
     genv._RbxPlusIsInstReadable = isInstReadable
     hasCoreGuiPluginCap = function()
+        if genv._RbxPlusIsLimitedCapExec == true then
+            genv._RbxPlusCachedPluginCap = false
+            return false
+        end
         if type(genv._RbxPlusCachedPluginCap) == "boolean" then
             return genv._RbxPlusCachedPluginCap
         end
+        local getIdFn = getthreadidentity or getidentity or genv.getthreadidentity or genv.getidentity
+        if type(getIdFn) == "function" then
+            local okId, tid = pcall(getIdFn)
+            if okId and type(tid) == "number" and tid < 4 then
+                genv._RbxPlusCachedPluginCap = false
+                return false
+            end
+        end
         local ok, res = pcall(function()
-            local probe = CoreGui:FindFirstChild("RobloxGui")
-                or CoreGui:FindFirstChild("TopBarApp")
-                or CoreGui:FindFirstChild("ExperienceChat")
-            if probe ~= nil then
-                local _ = probe.Name
-                local _ = probe:GetChildren()
-                return true
+            local desc = CoreGui:GetDescendants()
+            if #desc == 0 then
+                return nil
             end
-            local kids = CoreGui:GetChildren()
-            if #kids > 0 then
-                for i = 1, #kids do
-                    local _ = kids[i].Name
-                end
-                return true
+            for i = 1, #desc do
+                local d = desc[i]
+                local _ = d.Name
+                local _ = d.ClassName
+                local _ = d.Parent
+                local _ = d:IsA("Instance")
             end
-            return nil
+            return true
         end)
         if not ok then
             genv._RbxPlusCachedPluginCap = false
@@ -5824,12 +5856,13 @@ do
             if not okV then return nil end
             if type(val) == "function" then
                 return function(_, ...)
-                    local okM, r1, r2, r3 = pcall(val, CoreGui, ...)
-                    if okM then
+                    local mRes = table.pack(pcall(val, CoreGui, ...))
+                    if mRes[1] then
+                        local r1 = mRes[2]
                         if typeof and typeof(r1) == "Instance" and not isInstReadable(r1) then
                             return nil
                         end
-                        return r1, r2, r3
+                        return (unpack or table.unpack)(mRes, 2, mRes.n)
                     end
                     return nil
                 end
@@ -5922,10 +5955,10 @@ do
                 return 0
             end
             local ent = enterVcSafeScope()
-            local ok, r1, r2 = pcall(origVcScan, ...)
+            local sRes = table.pack(pcall(origVcScan, ...))
             leaveVcSafeScope(ent)
-            if ok then
-                return r1, r2
+            if sRes[1] then
+                return (unpack or table.unpack)(sRes, 2, sRes.n)
             end
             return 0
         end
@@ -6194,7 +6227,7 @@ do
                 end)
             end
             local entScope = enterVcSafeScope()
-            local okCall, r1, r2, r3 = pcall(origVcFn, ...)
+            local callRes = table.pack(pcall(origVcFn, ...))
             leaveVcSafeScope(entScope)
             if vcKey == "vcRun" then
                 disableForeignVcConns()
@@ -6210,13 +6243,14 @@ do
             elseif vcKey == "vcBuild" or vcKey == "vcApply" or vcKey == "vcDump" then
                 ensureVcBtnOnScreen(ak)
             end
-            if not okCall then
-                if vcKey == "vcRun" and (hasCoreGuiPluginCap() or not tostring(r1):find("lacking capability", 1, true)) then
-                    error(r1, 2)
+            if not callRes[1] then
+                local errMsg = callRes[2]
+                if vcKey == "vcRun" and (hasCoreGuiPluginCap() or not tostring(errMsg):find("lacking capability", 1, true)) then
+                    error(errMsg, 2)
                 end
                 return nil
             end
-            return r1, r2, r3
+            return (unpack or table.unpack)(callRes, 2, callRes.n)
         end
         genv["_RbxPlusWrapped_" .. vcKey] = wrappedVcFn
         return wrappedVcFn
@@ -6478,6 +6512,10 @@ genv._RbxPlusReanimBoosterUnload = function(isReload)
             { "reanimRun", genv._RbxPlusOrigReanimRun },
             { "cref", genv._RbxPlusOrig_cref },
             { "vcScan", genv._RbxPlusOrig_vcScan },
+            { "vcLevel", genv._RbxPlusOrig_vcLevel },
+            { "vcApply", genv._RbxPlusOrig_vcApply },
+            { "vcMuted", genv._RbxPlusOrig_vcMuted },
+            { "vcDump", genv._RbxPlusOrig_vcDump },
             { "vcRun", genv._RbxPlusOrig_vcRun },
             { "vcBuild", genv._RbxPlusOrig_vcBuild },
             { "reexecGo", genv._RbxPlusOrigReexecGo },
@@ -6504,5 +6542,11 @@ genv._RbxPlusReanimBoosterUnload = function(isReload)
             end
         end
     end
+end
+
+if type(genv._RbxPlusPendingBootFn) == "function" then
+    local startBoot = genv._RbxPlusPendingBootFn
+    genv._RbxPlusPendingBootFn = nil
+    startBoot()
 end
 
