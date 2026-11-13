@@ -1,6 +1,6 @@
 -- ============================================================================
--- AKPlus: UNIVERSAL EXECUTOR SHIM & DYNAMIC ANTI-FREEZE GOVERNOR (v9.0.3)
--- AKPlusBuild:903
+-- AKPlus: UNIVERSAL EXECUTOR SHIM & DYNAMIC ANTI-FREEZE GOVERNOR (v9.0.4)
+-- AKPlusBuild:904
 -- Fixes mobile/sandboxed/desktop executors (Delta, Codex, Vega X, Hydrogen,
 -- Solara, Xeno, Madium, Helios, Potassium, Volt, etc.) + OmniTaskManager-aware
 -- dynamic frame-budget & auto-stride governor + sub-command VM cache + English
@@ -44,7 +44,7 @@ do
     _gGuard._RbxPlusForceReload = nil
     _akForceReload = (_forceReload == true)
     if not _akForceReload
-        and _gGuard._RbxPlusBuild == 903
+        and _gGuard._RbxPlusBuild == 904
         and _gGuard._RbxPlusLoadingDM == game
         and type(_gGuard._RbxPlusLoadingStart) == "number"
         and (os.clock() - _gGuard._RbxPlusLoadingStart) < 45
@@ -55,7 +55,7 @@ do
 end
 
 do
-    local AKPLUS_BUILD = 903
+    local AKPLUS_BUILD = 904
     local callerEnv = getfenv and getfenv(1) or nil
     local origEnv = getfenv and getfenv(0) or _G
     local g = (getgenv and getgenv()) or _G
@@ -5328,6 +5328,7 @@ do
     local vcConnFields = {
         "stateConnection",
         "playerModeratedConnection",
+        "signalRConnection",
         "voiceToxicityModalConnection",
         "voiceToxicityToastConnection",
         "voiceReverseNudgeConnection",
@@ -5367,14 +5368,20 @@ do
                 elseif okSt
                     and st ~= Enum.VoiceChatState.Joining
                     and st ~= Enum.VoiceChatState.JoiningRetry
-                    and vci.JoinByGroupIdToken
                     and (os.clock() - vcLastRejoinAt) >= 1.0
                 then
                     vcLastRejoinAt = os.clock()
-                    local targetGid = vcLastGroupId or "default"
-                    local okJ = pcall(vci.JoinByGroupIdToken, vci, targetGid, wantMuted, true)
-                    if not okJ then
-                        pcall(vci.JoinByGroupIdToken, vci, targetGid, wantMuted)
+                    local okVcs, vcs = pcall(game.GetService, game, "VoiceChatService")
+                    local rejoined = false
+                    if okVcs and vcs then
+                        rejoined = pcall(function() vcs:rejoinVoice() end)
+                    end
+                    if not rejoined and vci.JoinByGroupIdToken then
+                        local targetGid = vcLastGroupId or "default"
+                        local okJ = pcall(vci.JoinByGroupIdToken, vci, targetGid, wantMuted, true)
+                        if not okJ then
+                            pcall(vci.JoinByGroupIdToken, vci, targetGid, wantMuted)
+                        end
                     end
                 end
                 local okP, isPaused = pcall(vci.IsPublishPaused, vci)
