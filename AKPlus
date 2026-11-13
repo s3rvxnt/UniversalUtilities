@@ -1,6 +1,6 @@
 -- ============================================================================
--- AKPlus: UNIVERSAL EXECUTOR SHIM & DYNAMIC ANTI-FREEZE GOVERNOR (v9.0.4)
--- AKPlusBuild:904
+-- AKPlus: UNIVERSAL EXECUTOR SHIM & DYNAMIC ANTI-FREEZE GOVERNOR (v9.0.5)
+-- AKPlusBuild:905
 -- Fixes mobile/sandboxed/desktop executors (Delta, Codex, Vega X, Hydrogen,
 -- Solara, Xeno, Madium, Helios, Potassium, Volt, etc.) + OmniTaskManager-aware
 -- dynamic frame-budget & auto-stride governor + sub-command VM cache + English
@@ -44,7 +44,7 @@ do
     _gGuard._RbxPlusForceReload = nil
     _akForceReload = (_forceReload == true)
     if not _akForceReload
-        and _gGuard._RbxPlusBuild == 904
+        and _gGuard._RbxPlusBuild == 905
         and _gGuard._RbxPlusLoadingDM == game
         and type(_gGuard._RbxPlusLoadingStart) == "number"
         and (os.clock() - _gGuard._RbxPlusLoadingStart) < 45
@@ -55,7 +55,7 @@ do
 end
 
 do
-    local AKPLUS_BUILD = 904
+    local AKPLUS_BUILD = 905
     local callerEnv = getfenv and getfenv(1) or nil
     local origEnv = getfenv and getfenv(0) or _G
     local g = (getgenv and getgenv()) or _G
@@ -127,8 +127,12 @@ do
         g._RbxPlusWrappedTrLive = nil
         g._RbxPlusWrappedReanimRun = nil
         g._RbxPlusWrappedReexecGo = nil
+        g._RbxPlusWrapped_cref = nil
+        g._RbxPlusWrapped_vcScan = nil
         g._RbxPlusWrapped_vcRun = nil
         g._RbxPlusWrapped_vcBuild = nil
+        g._RbxPlusCachedPluginCap = nil
+        g._RbxPlusVcSafeCoreGuiScope = false
         g["_RbxPlusWrapped_!rj"] = nil
         g["_RbxPlusWrapped_!rejoin"] = nil
         g["_RbxPlusWrapped_!serverhop"] = nil
@@ -151,8 +155,12 @@ do
         g._RbxPlusWrappedTrLive = nil
         g._RbxPlusWrappedReanimRun = nil
         g._RbxPlusWrappedReexecGo = nil
+        g._RbxPlusWrapped_cref = nil
+        g._RbxPlusWrapped_vcScan = nil
         g._RbxPlusWrapped_vcRun = nil
         g._RbxPlusWrapped_vcBuild = nil
+        g._RbxPlusCachedPluginCap = nil
+        g._RbxPlusVcSafeCoreGuiScope = false
         g["_RbxPlusWrapped_!rj"] = nil
         g["_RbxPlusWrapped_!rejoin"] = nil
         g["_RbxPlusWrapped_!serverhop"] = nil
@@ -1602,7 +1610,7 @@ do
 
     local function wrapAkExistingTargets(ak)
         if type(ak) ~= "table" then return end
-        for _, key in ipairs({ "trHook", "trLiveCand", "reanimRun", "vcRun", "vcBuild", "reexecGo" }) do
+        for _, key in ipairs({ "trHook", "trLiveCand", "reanimRun", "cref", "vcScan", "vcRun", "vcBuild", "reexecGo" }) do
             local wFn = akKeyWrappers[key]
             local cur = rawget(ak, key)
             if type(wFn) == "function" and type(cur) == "function" then
@@ -2316,14 +2324,20 @@ do
         g.getgenv,
         origEnv and rawget(origEnv, "getgenv")
     )
-    local getgenvFn
     if nativeGg then
         g._RbxPlusOrigGetgenv = nativeGg
-        getgenvFn = nativeGg
-    else
-        getgenvFn = c(function() return g end)
-        g._RbxPlusLastShimGetgenv = getgenvFn
     end
+    local getgenvFn = c(function()
+        local akTbl = rawget(g, "AKUI")
+        if type(akTbl) == "table" and g._RbxPlusAttachedAKUI ~= akTbl then
+            pcall(attachAkPreSnapshotHooks, akTbl)
+        end
+        if nativeGg then
+            return nativeGg()
+        end
+        return g
+    end)
+    g._RbxPlusLastShimGetgenv = getgenvFn
 
     local targetDbg = rawDbg
     if type(rawDbg) == "table" then
@@ -2774,7 +2788,7 @@ do
 
     -- Multi-hop teleport persistence helper + scoped CoreGui proxy for fast vcRun/vcBuild scans
     local AKPLUS_TELEPORT_CODE = [[
--- AKPlusBuild:901
+-- AKPlusBuild:905
 local _g = (getgenv and getgenv()) or _G
 do
     local _isf = isfile or _g.isfile
@@ -3309,7 +3323,10 @@ end)
     end
     g._RbxPlusOrigCloneref = rawCloneref
     local safeCloneref = markOurShim(function(inst)
-        if type(inst) == "table" and inst._isAKProxy then
+        if inst == CoreGui and g._RbxPlusVcSafeCoreGuiScope == true and type(g._RbxPlusSafeCoreGuiProxy) == "table" then
+            return g._RbxPlusSafeCoreGuiProxy
+        end
+        if type(inst) == "table" and rawget(inst, "_isAKProxy") then
             return inst
         end
         if rawCloneref and rawCloneref ~= g._RbxPlusLastShimCloneref and not ourShims[rawCloneref] then
@@ -3323,6 +3340,7 @@ end)
         return inst
     end)
     g._RbxPlusLastShimCloneref = safeCloneref
+    g.cloneref = safeCloneref
 
     if type(g._RbxPlusTruePrims) ~= "table" or g._RbxPlusTruePrims.dm ~= game then
         g._RbxPlusTruePrims = { dm = game }
@@ -3338,6 +3356,7 @@ end)
     updateTruePrim("ls", oldLs)
     updateTruePrim("isc", origIsc)
     updateTruePrim("setfps", rawSetFpsCap)
+    updateTruePrim("cloneref", rawCloneref)
     updateTruePrim("getfps", rawGetFpsCap)
     updateTruePrim("gi", g._RbxPlusOrigDbgGi)
     updateTruePrim("inf", g._RbxPlusOrigDbgInf)
@@ -3356,6 +3375,7 @@ end)
         g._RbxPlusSubCacheHits = 0
     end
 
+    g.getgenv = getgenvFn
     local env = {
         debug = targetDbg,
         iscclosure = g.iscclosure,
@@ -3815,6 +3835,8 @@ end)
         rawset(origEnv, "islclosure", g.islclosure)
         rawset(origEnv, "newcclosure", g.newcclosure)
         rawset(origEnv, "ypcall", g.ypcall)
+        rawset(origEnv, "getgenv", getgenvFn)
+        rawset(origEnv, "cloneref", safeCloneref)
         rawset(origEnv, "loadstring", akLoadstring)
         if safeSetFpsCap or rawSetFpsCap then
             rawset(origEnv, "setfpscap", safeSetFpsCap or rawSetFpsCap)
@@ -4537,8 +4559,8 @@ end)
 
         lastCheckpoint = "WaitClient"
         setStatus(initialBootMode == "teleport" and "[2/6] Loading turbo cache..." or "[2/6] Fetching AKADMIN.lua...")
-        fastWait()
         task.spawn(function()
+            fastWait()
             if coroutine and coroutine.running then
                 local th = coroutine.running()
                 if th then
@@ -5400,6 +5422,8 @@ do
                         if adi.Muted ~= wantMuted then
                             adi.Muted = wantMuted
                         end
+                    end)
+                    pcall(function()
                         if adi.Active ~= (not wantMuted) then
                             adi.Active = not wantMuted
                         end
@@ -5432,6 +5456,7 @@ do
             end
         end)
     end
+    local isInstReadable, hasCoreGuiPluginCap
     local function disableForeignVcConns()
         pcall(function()
             local okVci, vci = pcall(game.GetService, game, "VoiceChatInternal")
@@ -5491,31 +5516,254 @@ do
                     end
                 end
             end
-            pcall(function()
-                local rGui = CoreGui:FindFirstChild("RobloxGui")
-                local mods = rGui and rGui:FindFirstChild("Modules")
-                local vcFolder = mods and mods:FindFirstChild("VoiceChat")
-                local vcsmMod = vcFolder and vcFolder:FindFirstChild("VoiceChatServiceManager")
-                if vcsmMod and vcsmMod:IsA("ModuleScript") then
-                    local okReq, vcsm = pcall(require, vcsmMod)
-                    if okReq and type(vcsm) == "table" then
-                        local def = rawget(vcsm, "default") or vcsm
-                        if type(def) == "table" then
-                            neutralizeVcManagerTarget(def)
-                            local cvm = rawget(def, "coreVoiceManager")
-                            if type(cvm) == "table" then
-                                neutralizeVcManagerTarget(cvm)
+            if hasCoreGuiPluginCap() then
+                pcall(function()
+                    local rGui = CoreGui:FindFirstChild("RobloxGui")
+                    local mods = rGui and rGui:FindFirstChild("Modules")
+                    local vcFolder = mods and mods:FindFirstChild("VoiceChat")
+                    local vcsmMod = vcFolder and vcFolder:FindFirstChild("VoiceChatServiceManager")
+                    if vcsmMod and vcsmMod:IsA("ModuleScript") then
+                        local okReq, vcsm = pcall(require, vcsmMod)
+                        if okReq and type(vcsm) == "table" then
+                            local def = rawget(vcsm, "default") or vcsm
+                            if type(def) == "table" then
+                                neutralizeVcManagerTarget(def)
+                                local cvm = rawget(def, "coreVoiceManager")
+                                if type(cvm) == "table" then
+                                    neutralizeVcManagerTarget(cvm)
+                                end
                             end
                         end
                     end
-                end
-            end)
+                end)
+            end
             enforceVcPublishState(genv.AKUI, false)
         end)
     end
+    isInstReadable = function(inst)
+        if inst == nil then return false end
+        local ok = pcall(function()
+            local _ = inst.Name
+            local _ = inst.ClassName
+            local _ = inst.Parent
+        end)
+        return ok
+    end
+    hasCoreGuiPluginCap = function()
+        if type(genv._RbxPlusCachedPluginCap) == "boolean" then
+            return genv._RbxPlusCachedPluginCap
+        end
+        local ok, res = pcall(function()
+            local probe = CoreGui:FindFirstChild("RobloxGui")
+                or CoreGui:FindFirstChild("TopBarApp")
+                or CoreGui:FindFirstChild("ExperienceChat")
+            if probe ~= nil then
+                local _ = probe.Name
+                local _ = probe:GetChildren()
+                return true
+            end
+            local kids = CoreGui:GetChildren()
+            if #kids > 0 then
+                for i = 1, #kids do
+                    local _ = kids[i].Name
+                end
+                return true
+            end
+            return nil
+        end)
+        if not ok then
+            genv._RbxPlusCachedPluginCap = false
+            return false
+        end
+        if res == true then
+            genv._RbxPlusCachedPluginCap = true
+            return true
+        end
+        return false
+    end
+    local vcSafeScopeDepth = 0
+    local function enterVcSafeScope()
+        if not hasCoreGuiPluginCap() then
+            vcSafeScopeDepth += 1
+            genv._RbxPlusVcSafeCoreGuiScope = true
+            return true
+        end
+        return false
+    end
+    local function leaveVcSafeScope(entered)
+        if entered then
+            vcSafeScopeDepth = math.max(0, vcSafeScopeDepth - 1)
+            genv._RbxPlusVcSafeCoreGuiScope = (vcSafeScopeDepth > 0)
+        end
+    end
+    local safeChildAddedProxy = {
+        Connect = function(_, cb)
+            local dummy = { Connected = false, Disconnect = function() end }
+            if type(cb) ~= "function" then return dummy end
+            local okC, conn = pcall(function()
+                return CoreGui.ChildAdded:Connect(function(ch)
+                    if isInstReadable(ch) then
+                        local ent = enterVcSafeScope()
+                        pcall(cb, ch)
+                        leaveVcSafeScope(ent)
+                    end
+                end)
+            end)
+            if okC and conn then
+                trackConn(conn)
+                return conn
+            end
+            return dummy
+        end,
+    }
+    safeChildAddedProxy.Once = safeChildAddedProxy.Connect
+    local safeCoreGuiMethods = {}
+    function safeCoreGuiMethods:GetChildren()
+        local out = {}
+        local okK, kids = pcall(CoreGui.GetChildren, CoreGui)
+        if okK and type(kids) == "table" then
+            for i = 1, #kids do
+                local ch = kids[i]
+                if isInstReadable(ch) then
+                    out[#out + 1] = ch
+                end
+            end
+        end
+        return out
+    end
+    function safeCoreGuiMethods:GetDescendants()
+        local out = {}
+        local function walkReadable(node)
+            local okK, kids = pcall(node.GetChildren, node)
+            if okK and type(kids) == "table" then
+                for i = 1, #kids do
+                    local ch = kids[i]
+                    if isInstReadable(ch) then
+                        out[#out + 1] = ch
+                        walkReadable(ch)
+                    end
+                end
+            end
+        end
+        walkReadable(CoreGui)
+        return out
+    end
+    function safeCoreGuiMethods:FindFirstChild(nm, rec)
+        if not rec then
+            local okF, found = pcall(CoreGui.FindFirstChild, CoreGui, nm, false)
+            if okF and found and isInstReadable(found) then
+                return found
+            end
+            return nil
+        end
+        for _, d in ipairs(safeCoreGuiMethods.GetDescendants(self)) do
+            if d.Name == nm then
+                return d
+            end
+        end
+        return nil
+    end
+    function safeCoreGuiMethods:FindFirstChildOfClass(cn)
+        for _, ch in ipairs(safeCoreGuiMethods.GetChildren(self)) do
+            if ch.ClassName == cn then
+                return ch
+            end
+        end
+        return nil
+    end
+    function safeCoreGuiMethods:FindFirstChildWhichIsA(cn, rec)
+        local list = rec and safeCoreGuiMethods.GetDescendants(self) or safeCoreGuiMethods.GetChildren(self)
+        for i = 1, #list do
+            local okA, isMatch = pcall(list[i].IsA, list[i], cn)
+            if okA and isMatch then
+                return list[i]
+            end
+        end
+        return nil
+    end
+    function safeCoreGuiMethods:WaitForChild(nm)
+        return safeCoreGuiMethods.FindFirstChild(self, nm, false)
+    end
+    function safeCoreGuiMethods:IsA(cn)
+        return cn == "CoreGui" or cn == "BasePlayerGui" or cn == "Instance" or cn == "Object"
+    end
+    local safeCoreGuiProxy = setmetatable({ _isAKProxy = true }, {
+        __index = function(_, k)
+            if k == "ChildAdded" then
+                return safeChildAddedProxy
+            end
+            local m = safeCoreGuiMethods[k]
+            if m ~= nil then
+                return m
+            end
+            local okV, val = pcall(function() return CoreGui[k] end)
+            if not okV then return nil end
+            if type(val) == "function" then
+                return function(_, ...)
+                    local okM, r1, r2, r3 = pcall(val, CoreGui, ...)
+                    if okM then
+                        if typeof and typeof(r1) == "Instance" and not isInstReadable(r1) then
+                            return nil
+                        end
+                        return r1, r2, r3
+                    end
+                    return nil
+                end
+            end
+            if typeof and typeof(val) == "Instance" and not isInstReadable(val) then
+                return nil
+            end
+            return val
+        end,
+        __newindex = function(_, k, v)
+            pcall(function() CoreGui[k] = v end)
+        end,
+    })
+    genv._RbxPlusSafeCoreGuiProxy = safeCoreGuiProxy
+
+    kw.cref = function(ak, origCref)
+        if origCref == genv._RbxPlusWrapped_cref then return origCref end
+        genv._RbxPlusOrig_cref = origCref
+        local wrappedCref = function(inst)
+            if inst == CoreGui and genv._RbxPlusVcSafeCoreGuiScope == true and not hasCoreGuiPluginCap() then
+                return safeCoreGuiProxy
+            end
+            if type(inst) == "table" and rawget(inst, "_isAKProxy") then
+                return inst
+            end
+            local ok, res = pcall(origCref, inst)
+            if ok and res ~= nil then
+                return res
+            end
+            return inst
+        end
+        genv._RbxPlusWrapped_cref = wrappedCref
+        return wrappedCref
+    end
+
+    kw.vcScan = function(ak, origVcScan)
+        if origVcScan == genv._RbxPlusWrapped_vcScan then return origVcScan end
+        genv._RbxPlusOrig_vcScan = origVcScan
+        local wrappedVcScan = function(...)
+            if not hasCoreGuiPluginCap() then
+                return 0
+            end
+            local ent = enterVcSafeScope()
+            local ok, r1, r2 = pcall(origVcScan, ...)
+            leaveVcSafeScope(ent)
+            if ok then
+                return r1, r2
+            end
+            return 0
+        end
+        genv._RbxPlusWrapped_vcScan = wrappedVcScan
+        return wrappedVcScan
+    end
+
     local hookedUnibarInsts = setmetatable({}, { __mode = "k" })
     local unibarHbAttached = false
     local function syncUnibarCompact(ak)
+        if not hasCoreGuiPluginCap() then return nil, nil end
         local vc = type(ak) == "table" and ak.vc or nil
         if type(vc) ~= "table" then return nil, nil end
         local tba = CoreGui:FindFirstChild("TopBarApp")
@@ -5587,7 +5835,57 @@ do
         pcall(function()
             local vc = type(ak) == "table" and ak.vc or nil
             if type(vc) ~= "table" then return end
-            if type(vc.roots) ~= "function" then
+            local hasPluginCap = hasCoreGuiPluginCap()
+            if not hasPluginCap then
+                if not rawget(vc, "_akSafeRoots") or vc.roots ~= rawget(vc, "_akSafeRoots") then
+                    local safeRoots = function()
+                        local out = {}
+                        if ak.root and isInstReadable(ak.root) then
+                            out[#out + 1] = ak.root
+                        end
+                        if gethui then
+                            local okH, hui = pcall(gethui)
+                            if okH and hui and hui ~= CoreGui and isInstReadable(hui) then
+                                out[#out + 1] = hui
+                            end
+                        end
+                        return out
+                    end
+                    rawset(vc, "_akSafeRoots", safeRoots)
+                    vc.roots = safeRoots
+                end
+                if type(vc.dockFind) == "function" and vc.dockFind ~= rawget(vc, "_akSafeDockFind") then
+                    local origDockFind = vc.dockFind
+                    local safeDockFind = function(...)
+                        if not hasCoreGuiPluginCap() then return nil end
+                        local okF, r = pcall(origDockFind, ...)
+                        return okF and r or nil
+                    end
+                    rawset(vc, "_akSafeDockFind", safeDockFind)
+                    vc.dockFind = safeDockFind
+                end
+                if type(vc.dockOk) == "function" and vc.dockOk ~= rawget(vc, "_akSafeDockOk") then
+                    local origDockOk = vc.dockOk
+                    local safeDockOk = function(inst, ...)
+                        if not isInstReadable(inst) then return false end
+                        local okO, r = pcall(origDockOk, inst, ...)
+                        return okO and r == true or false
+                    end
+                    rawset(vc, "_akSafeDockOk", safeDockOk)
+                    vc.dockOk = safeDockOk
+                end
+                if type(vc.refind) == "function" and vc.refind ~= rawget(vc, "_akSafeRefind") then
+                    local origRefind = vc.refind
+                    local safeRefind = function(ch, ...)
+                        if ch ~= nil and not isInstReadable(ch) then return end
+                        local ent = enterVcSafeScope()
+                        pcall(origRefind, ch, ...)
+                        leaveVcSafeScope(ent)
+                    end
+                    rawset(vc, "_akSafeRefind", safeRefind)
+                    vc.refind = safeRefind
+                end
+            elseif type(vc.roots) ~= "function" then
                 vc.roots = function()
                     local out = { CoreGui }
                     if gethui then
@@ -5600,48 +5898,60 @@ do
                 end
             end
             local function customDockAt(inst)
-                if typeof(inst) ~= "Instance" or not inst:IsA("GuiObject") then
-                    return nil
-                end
-                while inst and inst:IsA("GuiObject") and inst.AbsoluteSize.X < 8 do
-                    inst = inst.Parent
-                end
-                if not (inst and inst:IsA("GuiObject")) then
-                    return nil
-                end
-                local sg = inst:FindFirstAncestorOfClass("ScreenGui")
-                if not sg then
-                    return nil
-                end
-                local center = inst.AbsolutePosition + (inst.AbsoluteSize / 2)
-                local root = ak.root
-                local rootPos = (root and typeof(root) == "Instance") and root.AbsolutePosition or Vector2.new(0, -58)
-                local pos = center - rootPos
-                if pos.X <= 0 or pos.Y <= 0 then
-                    return nil
-                end
-                return pos - Vector2.new(10, 5)
+                local okD, resPos = pcall(function()
+                    if typeof(inst) ~= "Instance" or not isInstReadable(inst) or not inst:IsA("GuiObject") then
+                        return nil
+                    end
+                    while inst and isInstReadable(inst) and inst:IsA("GuiObject") and inst.AbsoluteSize.X < 8 do
+                        inst = inst.Parent
+                    end
+                    if not (inst and isInstReadable(inst) and inst:IsA("GuiObject")) then
+                        return nil
+                    end
+                    local sg = inst:FindFirstAncestorOfClass("ScreenGui")
+                    if not sg then
+                        return nil
+                    end
+                    local center = inst.AbsolutePosition + (inst.AbsoluteSize / 2)
+                    local root = ak.root
+                    local rootPos = (root and typeof(root) == "Instance" and isInstReadable(root)) and root.AbsolutePosition or Vector2.new(0, -58)
+                    local pos = center - rootPos
+                    if pos.X <= 0 or pos.Y <= 0 then
+                        return nil
+                    end
+                    return pos - Vector2.new(10, 5)
+                end)
+                return okD and resPos or nil
             end
             local function customDockPos()
-                local okU, unibar, visCount = pcall(syncUnibarCompact, ak)
-                if okU and unibar and type(visCount) == "number" then
-                    local root = ak.root
-                    local rootPos = (root and typeof(root) == "Instance") and root.AbsolutePosition or Vector2.new(0, -58)
-                    local slotCenter = (unibar.AbsolutePosition - rootPos) + Vector2.new(4 + visCount * 44 + 22, 22)
-                    return slotCenter - Vector2.new(10, 5)
-                end
-                if vc.orig and typeof(vc.orig) == "Instance" and vc.orig.Parent then
-                    local p = customDockAt(vc.orig)
-                    if p then return p end
-                end
-                if vc.dockFind then
-                    local okF, dObj = pcall(vc.dockFind)
-                    if okF and dObj then
-                        local p = customDockAt(dObj)
-                        if p then return p end
+                local okP, resPos = pcall(function()
+                    if hasCoreGuiPluginCap() then
+                        local okU, unibar, visCount = pcall(syncUnibarCompact, ak)
+                        if okU and unibar and type(visCount) == "number" then
+                            local root = ak.root
+                            local rootPos = (root and typeof(root) == "Instance" and isInstReadable(root)) and root.AbsolutePosition or Vector2.new(0, -58)
+                            local slotCenter = (unibar.AbsolutePosition - rootPos) + Vector2.new(4 + visCount * 44 + 22, 22)
+                            return slotCenter - Vector2.new(10, 5)
+                        end
+                        if vc.orig and typeof(vc.orig) == "Instance" and isInstReadable(vc.orig) and vc.orig.Parent then
+                            local p = customDockAt(vc.orig)
+                            if p then return p end
+                        end
+                        if vc.dockFind then
+                            local okF, dObj = pcall(vc.dockFind)
+                            if okF and dObj then
+                                local p = customDockAt(dObj)
+                                if p then return p end
+                            end
+                        end
+                    elseif type(ak.prefs) == "table" and ak.prefs.island == false then
+                        local root = ak.root
+                        local rootPos = (root and typeof(root) == "Instance" and isInstReadable(root)) and root.AbsolutePosition or Vector2.new(0, -58)
+                        return (Vector2.new(182, 22) - rootPos) - Vector2.new(10, 5)
                     end
-                end
-                return nil
+                    return nil
+                end)
+                return okP and resPos or nil
             end
             if not rawget(vc, "_akCustomDockAt") or vc.dockAt ~= rawget(vc, "_akCustomDockAt") then
                 rawset(vc, "_akCustomDockAt", customDockAt)
@@ -5651,8 +5961,8 @@ do
                 rawset(vc, "_akCustomDockPos", customDockPos)
                 vc.dockPos = customDockPos
             end
-            vc.dockScan = 0
-            syncUnibarCompact(ak)
+            vc.dockScan = hasPluginCap and 0 or math.huge
+            pcall(syncUnibarCompact, ak)
             if not unibarHbAttached then
                 unibarHbAttached = true
                 local lastSync = 0
@@ -5709,7 +6019,9 @@ do
                     end
                 end)
             end
+            local entScope = enterVcSafeScope()
             local okCall, r1, r2, r3 = pcall(origVcFn, ...)
+            leaveVcSafeScope(entScope)
             if vcKey == "vcRun" then
                 disableForeignVcConns()
                 ensureVcBtnOnScreen(ak)
@@ -5864,7 +6176,7 @@ local function hookAndApplyAll()
             local safeSet = genv._RbxPlusSafeSetAkField
             local kw = genv._RbxPlusAkKeyWrappers
             if type(kw) == "table" then
-                for _, key in ipairs({ "reanimRun", "vcRun", "vcBuild", "reexecGo" }) do
+                for _, key in ipairs({ "reanimRun", "cref", "vcScan", "vcRun", "vcBuild", "reexecGo" }) do
                     local wFn = kw[key]
                     local cur = rawget(ak, key)
                     if type(wFn) == "function" and type(cur) == "function" then
@@ -5985,6 +6297,8 @@ genv._RbxPlusReanimBoosterUnload = function(isReload)
         local safeSet = genv._RbxPlusSafeSetAkField
         local restorePairs = {
             { "reanimRun", genv._RbxPlusOrigReanimRun },
+            { "cref", genv._RbxPlusOrig_cref },
+            { "vcScan", genv._RbxPlusOrig_vcScan },
             { "vcRun", genv._RbxPlusOrig_vcRun },
             { "vcBuild", genv._RbxPlusOrig_vcBuild },
             { "reexecGo", genv._RbxPlusOrigReexecGo },
