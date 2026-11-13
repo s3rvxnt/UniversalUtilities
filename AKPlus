@@ -1,0 +1,525 @@
+-- ============================================================================
+-- AKPlus: UNIVERSAL EXECUTOR SHIM & DYNAMIC ANTI-FREEZE GOVERNOR (v9.0.2)
+-- AKPlusBuild:902
+-- Fixes mobile/sandboxed/desktop executors (Delta, Codex, Vega X, Hydrogen,
+-- Solara, Xeno, Madium, Helios, Potassium, Volt, etc.) + OmniTaskManager-aware
+-- dynamic frame-budget & auto-stride governor + sub-command VM cache + English
+-- trHook fast-bypass + scoped !antivcban + auto-load-aware rejoin persistence.
+-- ============================================================================
+local _akForceReload = false
+local _akEntryArgs = { ... }
+local _akEntryArgsN = select("#", ...)
+do
+    local _gGuard = (getgenv and getgenv()) or _G
+    local _legacyPfx = "_" .. "AK"
+    local _legacyForce = _gGuard[_legacyPfx .. "ForceReload"]
+    for _, _tbl in ipairs({ _gGuard, _G, shared, (getfenv and getfenv(0)) or nil }) do
+        if type(_tbl) == "table" then
+            local _mig = {}
+            for _k, _v in pairs(_tbl) do
+                if type(_k) == "string" and _k:sub(1, 3) == _legacyPfx then
+                    _mig[_k] = _v
+                end
+            end
+            for _k, _v in pairs(_mig) do
+                local _suf = _k:sub(4)
+                local _nk = "_RbxPlus" .. _suf
+                if _gGuard[_nk] == nil
+                    and _suf ~= "Y"
+                    and _suf ~= "S"
+                    and _suf ~= "D"
+                    and _suf ~= "P"
+                    and _suf ~= "B"
+                    and _suf ~= "Env"
+                    and _suf ~= "PlusLoadingDM"
+                    and _suf ~= "PlusLoadingStart"
+                then
+                    _gGuard[_nk] = _v
+                end
+                _tbl[_k] = nil
+            end
+        end
+    end
+    local _forceReload = _gGuard._RbxPlusForceReload or (_legacyForce == true)
+    _gGuard._RbxPlusForceReload = nil
+    _akForceReload = (_forceReload == true)
+    if not _akForceReload
+        and _gGuard._RbxPlusBuild == 902
+        and _gGuard._RbxPlusLoadingDM == game
+        and type(_gGuard._RbxPlusLoadingStart) == "number"
+        and (os.clock() - _gGuard._RbxPlusLoadingStart) < 45
+    then
+        _gGuard._RbxPlusBootMode = nil
+        return
+    end
+end
+
+do
+    local AKPLUS_BUILD = 902
+    local callerEnv = getfenv and getfenv(1) or nil
+    local origEnv = getfenv and getfenv(0) or _G
+    local g = (getgenv and getgenv()) or _G
+    g._RbxPlusBuild = AKPLUS_BUILD
+    g._RbxPlusServerBoot = tostring(game.PlaceId) .. ":" .. tostring(game.JobId)
+
+    local CoreGui = game:GetService("CoreGui")
+    local Players = game:GetService("Players")
+    local RunService = game:GetService("RunService")
+    local TweenService = game:GetService("TweenService")
+    local UserInputService = game:GetService("UserInputService")
+    local Workspace = game:GetService("Workspace")
+
+    local function findGui(name)
+        local found = CoreGui:FindFirstChild(name)
+        if found then return found end
+        if gethui then
+            local ok, hui = pcall(gethui)
+            if ok and hui and hui ~= CoreGui then
+                found = hui:FindFirstChild(name)
+                if found then return found end
+            end
+        end
+        local lp = Players.LocalPlayer
+        local pg = lp and lp:FindFirstChildOfClass("PlayerGui")
+        return pg and pg:FindFirstChild(name) or nil
+    end
+
+    local staleAkKeys = {
+        "AK_ADMIN_EXECUTED", "AKUI", "AK_SND", "AK_ISLAND",
+        "AK_RUN_CMD", "AK_REEXEC_PROMPT", "AK_PRELOAD_HEADSHOT",
+        "AK_FPS_BOOST_FN", "AK_POP_DISCORD",
+        "AK_TP_ARMED", "AK_TP_Q", "AK_TP_CLR", "AK_LOAD_BEAT",
+    }
+    local function wipeStaleAkGlobals()
+        for _, k in ipairs(staleAkKeys) do
+            g[k] = nil
+            if _G then _G[k] = nil end
+        end
+    end
+
+    if _akForceReload then
+        if type(g.AKUI) == "table" then
+            pcall(rawset, g.AKUI, "dead", true)
+            if type(g.AKUI.builtInFns) == "table" and type(g.AKUI.builtInFns["!destroy"]) == "function" then
+                pcall(g.AKUI.builtInFns["!destroy"])
+            end
+        end
+        g._RbxPlusTamperSnaps = nil
+        g._RbxPlusAttachedAKUI = nil
+        g._RbxPlusSkipTranslatorRetry = nil
+        if type(g._RbxPlusReanimBoosterUnload) == "function" then
+            pcall(g._RbxPlusReanimBoosterUnload, true)
+        end
+        if type(g._RbxPlusDestroyStatusPill) == "function" then
+            pcall(g._RbxPlusDestroyStatusPill)
+        end
+        for _, guiName in ipairs({ "AKAdmin2", "AKAuthGui" }) do
+            local oldGui = findGui(guiName)
+            if oldGui then
+                pcall(function() oldGui:Destroy() end)
+            end
+        end
+        g._RbxPlusSubCache = nil
+        g._RbxPlusSubCacheOrder = nil
+        g._RbxPlusSubCacheSeq = 0
+        g._RbxPlusSubCacheHits = 0
+        g._RbxPlusWrappedTrHook = nil
+        g._RbxPlusWrappedTrLive = nil
+        g._RbxPlusWrappedReanimRun = nil
+        g._RbxPlusWrappedReexecGo = nil
+        g._RbxPlusWrapped_vcRun = nil
+        g._RbxPlusWrapped_vcBuild = nil
+        g["_RbxPlusWrapped_!rj"] = nil
+        g["_RbxPlusWrapped_!rejoin"] = nil
+        g["_RbxPlusWrapped_!serverhop"] = nil
+        wipeStaleAkGlobals()
+    end
+
+    local isNewDataModel = (g._RbxPlusShimDataModel ~= nil and g._RbxPlusShimDataModel ~= game)
+        or (g._RbxPlusShimDataModel == nil and g._RbxPlusDataModel ~= game)
+    if isNewDataModel then
+        g._RbxPlusShimDataModel = game
+        g._RbxPlusDataModel = game
+        g._RbxPlusTeleportArmed = false
+        g._RbxPlusForceTpRearmedDM = nil
+        g._RbxPlusPhaseARetryDM = nil
+        g._RbxPlusSubCache = nil
+        g._RbxPlusSubCacheOrder = nil
+        g._RbxPlusSubCacheSeq = 0
+        g._RbxPlusSubCacheHits = 0
+        g._RbxPlusWrappedTrHook = nil
+        g._RbxPlusWrappedTrLive = nil
+        g._RbxPlusWrappedReanimRun = nil
+        g._RbxPlusWrappedReexecGo = nil
+        g._RbxPlusWrapped_vcRun = nil
+        g._RbxPlusWrapped_vcBuild = nil
+        g["_RbxPlusWrapped_!rj"] = nil
+        g["_RbxPlusWrapped_!rejoin"] = nil
+        g["_RbxPlusWrapped_!serverhop"] = nil
+        local existingFullUi = findGui("AKAdmin2")
+        if not (existingFullUi and existingFullUi:FindFirstChild("!jump", true)) then
+            if type(g._RbxPlusDestroyStatusPill) == "function" then
+                pcall(g._RbxPlusDestroyStatusPill)
+            end
+            wipeStaleAkGlobals()
+        end
+    else
+        g._RbxPlusShimDataModel = game
+        g._RbxPlusDataModel = game
+        local existingFullUi = findGui("AKAdmin2")
+        if not (existingFullUi and existingFullUi:FindFirstChild("!jump", true)) then
+            if type(g._RbxPlusDestroyStatusPill) == "function" then
+                pcall(g._RbxPlusDestroyStatusPill)
+            end
+            wipeStaleAkGlobals()
+        end
+    end
+
+    g._RbxPlusLoadingDM = game
+    g._RbxPlusLoadingStart = os.clock()
+
+    local truePrims = (type(g._RbxPlusTruePrims) == "table" and g._RbxPlusTruePrims.dm == game) and g._RbxPlusTruePrims or nil
+
+    local ourShims = g._RbxPlusOurShims
+    if type(ourShims) ~= "table" then
+        ourShims = setmetatable({}, { __mode = "k" })
+        g._RbxPlusOurShims = ourShims
+    end
+    local function markOurShim(fn)
+        if type(fn) == "function" then
+            ourShims[fn] = true
+        end
+        return fn
+    end
+
+    local rawDbgEarly = (type(debug) == "table" and debug) or g._RbxPlusOrigDbg
+    local rawDbgInfoEarly = (type(g._RbxPlusOrigDbgInf) == "function" and not ourShims[g._RbxPlusOrigDbgInf] and g._RbxPlusOrigDbgInf)
+        or (rawDbgEarly and type(rawDbgEarly.info) == "function" and not ourShims[rawDbgEarly.info] and rawDbgEarly.info)
+        or nil
+
+    local xenoSrcEarly = nil
+    if rawDbgInfoEarly then
+        local probeFn = (shared and type(shared.__Xeno) == "table" and shared.__Xeno.getgenv) or getgenv or g.getgenv
+        if type(probeFn) == "function" and not ourShims[probeFn] then
+            local okX, sX = pcall(rawDbgInfoEarly, probeFn, "s")
+            if okX and type(sX) == "string" and sX ~= "" and sX ~= "[C]" and not sX:find("loadstring:", 1, true) then
+                xenoSrcEarly = sX
+            end
+        end
+    end
+
+    local function isNativeCFn(fn)
+        if type(fn) ~= "function" then return false end
+        if ourShims[fn] then return false end
+        if rawDbgInfoEarly then
+            local ok, s = pcall(rawDbgInfoEarly, fn, "s")
+            if ok and type(s) == "string" then
+                return s == "[C]" or (xenoSrcEarly ~= nil and s == xenoSrcEarly)
+            end
+        end
+        if type(iscclosure) == "function" and not ourShims[iscclosure] then
+            local okI, rI = pcall(iscclosure, fn)
+            if okI and type(rI) == "boolean" then
+                return rI
+            end
+        end
+        return true
+    end
+
+    local function collectUpvalues(fn)
+        local out = {}
+        local seenVals = {}
+        if rawDbgEarly and type(rawDbgEarly.getupvalue) == "function" then
+            for idx = 1, 48 do
+                local pk = { pcall(rawDbgEarly.getupvalue, fn, idx) }
+                if not pk[1] or pk[2] == nil then
+                    break
+                end
+                local uname, uval
+                if #pk >= 3 or type(pk[2]) == "string" then
+                    uname = type(pk[2]) == "string" and pk[2] or ""
+                    uval = pk[3]
+                else
+                    uname = ""
+                    uval = pk[2]
+                end
+                if uval ~= nil and not seenVals[uval] then
+                    seenVals[uval] = true
+                    out[#out + 1] = { name = uname, val = uval }
+                end
+            end
+        end
+        if rawDbgEarly and type(rawDbgEarly.getupvalues) == "function" then
+            local okT, tbl = pcall(rawDbgEarly.getupvalues, fn)
+            if okT and type(tbl) == "table" then
+                for k, v in pairs(tbl) do
+                    if v ~= nil and not seenVals[v] then
+                        seenVals[v] = true
+                        out[#out + 1] = { name = type(k) == "string" and k or "", val = v }
+                    end
+                end
+            end
+        end
+        return out
+    end
+
+    local function peelUpvalueCFn(roots, acceptFn, preferNameFn)
+        local visited = {}
+        local queue = {}
+        for i = 1, #roots do
+            local r = roots[i]
+            if type(r) == "function" then
+                queue[#queue + 1] = r
+            end
+        end
+        for _ = 1, 3 do
+            local nextQueue = {}
+            local fallbackMatch = nil
+            for i = 1, #queue do
+                local fn = queue[i]
+                if not visited[fn] then
+                    visited[fn] = true
+                    local uvs = collectUpvalues(fn)
+                    for j = 1, #uvs do
+                        local u = uvs[j]
+                        local v = u.val
+                        if type(v) == "function" and not ourShims[v] then
+                            if isNativeCFn(v) and (not acceptFn or acceptFn(v, u.name)) then
+                                if preferNameFn and u.name ~= "" and preferNameFn(u.name) then
+                                    return v
+                                elseif not fallbackMatch then
+                                    fallbackMatch = v
+                                end
+                            elseif not isNativeCFn(v) and not visited[v] then
+                                nextQueue[#nextQueue + 1] = v
+                            end
+                        end
+                    end
+                end
+            end
+            if fallbackMatch then
+                return fallbackMatch
+            end
+            queue = nextQueue
+            if #queue == 0 then
+                break
+            end
+        end
+        return nil
+    end
+
+    local function resolvePrimFn(prevOrig, lastShim, ...)
+        local n = select("#", ...)
+        local cands = {}
+        if isNewDataModel then
+            for i = 1, n do
+                local fn = select(i, ...)
+                if type(fn) == "function" and fn ~= lastShim and not ourShims[fn] then
+                    cands[#cands + 1] = fn
+                end
+            end
+            if type(prevOrig) == "function" and prevOrig ~= lastShim and not ourShims[prevOrig] then
+                cands[#cands + 1] = prevOrig
+            end
+        else
+            if type(prevOrig) == "function" and prevOrig ~= lastShim and not ourShims[prevOrig] then
+                cands[#cands + 1] = prevOrig
+            end
+            for i = 1, n do
+                local fn = select(i, ...)
+                if type(fn) == "function" and fn ~= lastShim and not ourShims[fn] then
+                    cands[#cands + 1] = fn
+                end
+            end
+        end
+        for i = 1, #cands do
+            if isNativeCFn(cands[i]) then
+                return cands[i]
+            end
+        end
+        return cands[1]
+    end
+
+    local function wrapLuaCClosure(fn)
+        if type(fn) ~= "function" then return fn end
+        if ourShims[fn] then return fn end
+        return markOurShim(function(...)
+            return fn(...)
+        end)
+    end
+
+    local rawNewcc = resolvePrimFn(
+        g._RbxPlusOrigNewcclosure,
+        g._RbxPlusLastShimNewcclosure,
+        newcclosure,
+        g.newcclosure,
+        origEnv and rawget(origEnv, "newcclosure")
+    )
+    local c = wrapLuaCClosure
+    if type(rawNewcc) == "function" then
+        local callerTh = coroutine and coroutine.running and coroutine.running() or nil
+        local innerTh = nil
+        local okW, testWrapped = pcall(rawNewcc, function(x, y)
+            innerTh = coroutine and coroutine.running and coroutine.running() or nil
+            return x, y
+        end)
+        if okW and type(testWrapped) == "function" then
+            local ok1, r1a, r1b = pcall(testWrapped, 11, 12)
+            local ok2, r2a, r2b = pcall(testWrapped, 22, 23)
+            if ok1 and r1a == 11 and r1b == 12 and ok2 and r2a == 22 and r2b == 23 and innerTh == callerTh then
+                g._RbxPlusOrigNewcclosure = rawNewcc
+                c = function(fn)
+                    if type(fn) ~= "function" then return fn end
+                    local okC, resC = pcall(rawNewcc, fn)
+                    if okC and type(resC) == "function" then
+                        return markOurShim(resC)
+                    end
+                    return wrapLuaCClosure(fn)
+                end
+            end
+        end
+    end
+    if c == wrapLuaCClosure then
+        g._RbxPlusLastShimNewcclosure = wrapLuaCClosure
+        pcall(function() g.newcclosure = wrapLuaCClosure end)
+    end
+
+    local function isWorkingLs(fn)
+        if type(fn) ~= "function" or ourShims[fn] then return false end
+        local ok1, compiled = pcall(fn, "return 1738")
+        if not ok1 or type(compiled) ~= "function" then return false end
+        local ok2, res = pcall(compiled)
+        return ok2 and res == 1738
+    end
+
+    local function hasShimLsUpvalue(fn)
+        if type(fn) ~= "function" then return false end
+        local uvs = collectUpvalues(fn)
+        for i = 1, #uvs do
+            local nm = uvs[i].name
+            if nm == "oldLs" or nm == "selfBindPrefix" or nm == "akLoadstring" then
+                return true
+            end
+        end
+        return false
+    end
+
+    local xenoRawLs = (shared and type(shared.__Xeno) == "table" and type(shared.__Xeno.loadstring) == "function")
+        and shared.__Xeno.loadstring or nil
+    local oldLs = resolvePrimFn(
+        g._RbxPlusOrigLs,
+        g._RbxPlusLastShimLs,
+        loadstring,
+        g.loadstring,
+        xenoRawLs,
+        origEnv and rawget(origEnv, "loadstring"),
+        truePrims and truePrims.ls
+    )
+    if not oldLs or ourShims[oldLs] or hasShimLsUpvalue(oldLs) or not isWorkingLs(oldLs) then
+        local peeledLs = peelUpvalueCFn(
+            {
+                oldLs,
+                g._RbxPlusOrigLs,
+                loadstring,
+                g.loadstring,
+                xenoRawLs,
+                origEnv and rawget(origEnv, "loadstring") or nil,
+                truePrims and truePrims.ls or nil,
+            },
+            isWorkingLs,
+            function(nm)
+                local l = nm:lower()
+                return l:find("ls", 1, true) ~= nil or l:find("loadstring", 1, true) ~= nil
+            end
+        )
+        if peeledLs then
+            oldLs = peeledLs
+        else
+            for _, candLs in ipairs({
+                truePrims and truePrims.ls or nil,
+                g._RbxPlusOrigLs,
+                xenoRawLs,
+                loadstring,
+                g.loadstring,
+            }) do
+                if type(candLs) == "function" and not ourShims[candLs] and isWorkingLs(candLs) then
+                    oldLs = candLs
+                    break
+                end
+            end
+            if not oldLs or (isNativeCFn(oldLs) and not isWorkingLs(oldLs)) then
+                if truePrims and type(truePrims.ls) == "function" and not ourShims[truePrims.ls] then
+                    oldLs = truePrims.ls
+                elseif type(xenoRawLs) == "function" and not ourShims[xenoRawLs] then
+                    oldLs = xenoRawLs
+                elseif type(loadstring) == "function" and not ourShims[loadstring] then
+                    oldLs = loadstring
+                end
+            end
+        end
+    end
+
+    local function isValidIscFn(fn)
+        if type(fn) ~= "function" or ourShims[fn] or fn == pcall or fn == type then
+            return false
+        end
+        local okA, rA = pcall(fn, pcall)
+        local okB, rB = pcall(fn, function() end)
+        return okA and rA == true and okB and rB == false
+    end
+
+    local origIsc = resolvePrimFn(
+        g._RbxPlusOrigIsc,
+        g._RbxPlusLastShimIsc,
+        iscclosure,
+        g.iscclosure,
+        origEnv and rawget(origEnv, "iscclosure"),
+        truePrims and truePrims.isc
+    )
+    if type(origIsc) == "function" and not isValidIscFn(origIsc) then
+        local peeledIsc = peelUpvalueCFn(
+            { origIsc, g._RbxPlusOrigIsc, iscclosure, g.iscclosure },
+            isValidIscFn,
+            function(nm) return nm:lower():find("isc", 1, true) ~= nil end
+        )
+        if peeledIsc then
+            origIsc = peeledIsc
+        elseif truePrims and isValidIscFn(truePrims.isc) then
+            origIsc = truePrims.isc
+        else
+            origIsc = nil
+        end
+    end
+    local rawDbg = (isNewDataModel and type(debug) == "table" and debug ~= g._RbxPlusLastShimDbg and debug)
+        or (type(debug) == "table" and debug)
+        or g._RbxPlusOrigDbg
+    g._RbxPlusOrigLs = oldLs
+    g._RbxPlusOrigIsc = origIsc
+    g._RbxPlusOrigDbg = rawDbg
+
+    local voltTbl = (type(volt) == "table" and volt) or (type(g.volt) == "table" and g.volt) or nil
+    local awpTbl = (type(awp) == "table" and awp) or (type(g.awp) == "table" and g.awp) or nil
+    local synTbl = (type(syn) == "table" and syn) or (type(g.syn) == "table" and g.syn) or nil
+    local fluxusTbl = (type(fluxus) == "table" and fluxus) or (type(g.fluxus) == "table" and g.fluxus) or nil
+    local krnlTbl = (type(krnl) == "table" and krnl) or (type(g.krnl) == "table" and g.krnl) or nil
+
+    local rawSetFpsCap = resolvePrimFn(
+        g._RbxPlusOrigSetFpsCap,
+        g._RbxPlusLastShimSetFpsCap,
+        setfpscap,
+        set_fps_cap,
+        g.setfpscap,
+        g.set_fps_cap,
+        voltTbl and (voltTbl.setfpscap or voltTbl.set_fps_cap),
+        awpTbl and (awpTbl.setfpscap or awpTbl.set_fps_cap),
+        synTbl and synTbl.setfpscap,
+        origEnv and (rawget(origEnv, "setfpscap") or rawget(origEnv, "set_fps_cap")),
+        truePrims and truePrims.setfps
+    )
+    local rawGetFpsCap = resolvePrimFn(
+        g._RbxPlusOrigGetFpsCap,
+        nil,
+        getfpscap,
+        get_fps_cap,
+        g.getfpscap,
+        g
