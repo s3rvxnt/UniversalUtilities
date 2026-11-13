@@ -1,6 +1,6 @@
 -- ============================================================================
--- AKPlus: UNIVERSAL EXECUTOR SHIM & DYNAMIC ANTI-FREEZE GOVERNOR (v9.0.5)
--- AKPlusBuild:905
+-- AKPlus: UNIVERSAL EXECUTOR SHIM & DYNAMIC ANTI-FREEZE GOVERNOR (v9.0.6)
+-- AKPlusBuild:906
 -- Fixes mobile/sandboxed/desktop executors (Delta, Codex, Vega X, Hydrogen,
 -- Solara, Xeno, Madium, Helios, Potassium, Volt, etc.) + OmniTaskManager-aware
 -- dynamic frame-budget & auto-stride governor + sub-command VM cache + English
@@ -44,7 +44,7 @@ do
     _gGuard._RbxPlusForceReload = nil
     _akForceReload = (_forceReload == true)
     if not _akForceReload
-        and _gGuard._RbxPlusBuild == 905
+        and _gGuard._RbxPlusBuild == 906
         and _gGuard._RbxPlusLoadingDM == game
         and type(_gGuard._RbxPlusLoadingStart) == "number"
         and (os.clock() - _gGuard._RbxPlusLoadingStart) < 45
@@ -55,7 +55,7 @@ do
 end
 
 do
-    local AKPLUS_BUILD = 905
+    local AKPLUS_BUILD = 906
     local callerEnv = getfenv and getfenv(1) or nil
     local origEnv = getfenv and getfenv(0) or _G
     local g = (getgenv and getgenv()) or _G
@@ -1610,7 +1610,7 @@ do
 
     local function wrapAkExistingTargets(ak)
         if type(ak) ~= "table" then return end
-        for _, key in ipairs({ "trHook", "trLiveCand", "reanimRun", "cref", "vcScan", "vcRun", "vcBuild", "reexecGo" }) do
+        for _, key in ipairs({ "trHook", "trLiveCand", "reanimRun", "cref", "vcScan", "vcLevel", "vcApply", "vcMuted", "vcDump", "vcRun", "vcBuild", "reexecGo" }) do
             local wFn = akKeyWrappers[key]
             local cur = rawget(ak, key)
             if type(wFn) == "function" and type(cur) == "function" then
@@ -2788,7 +2788,7 @@ do
 
     -- Multi-hop teleport persistence helper + scoped CoreGui proxy for fast vcRun/vcBuild scans
     local AKPLUS_TELEPORT_CODE = [[
--- AKPlusBuild:905
+-- AKPlusBuild:906
 local _g = (getgenv and getgenv()) or _G
 do
     local _isf = isfile or _g.isfile
@@ -3326,6 +3326,9 @@ end)
         if inst == CoreGui and g._RbxPlusVcSafeCoreGuiScope == true and type(g._RbxPlusSafeCoreGuiProxy) == "table" then
             return g._RbxPlusSafeCoreGuiProxy
         end
+        if inst == RunService and type(g._RbxPlusSafeRunServiceProxy) == "table" and type(g._RbxPlusHasCoreGuiPluginCap) == "function" and not g._RbxPlusHasCoreGuiPluginCap() then
+            return g._RbxPlusSafeRunServiceProxy
+        end
         if type(inst) == "table" and rawget(inst, "_isAKProxy") then
             return inst
         end
@@ -3375,6 +3378,43 @@ end)
         g._RbxPlusSubCacheHits = 0
     end
 
+    local function filterReadableInstList(list)
+        local hasCapFn = g._RbxPlusHasCoreGuiPluginCap
+        if type(hasCapFn) == "function" and hasCapFn() then
+            return list
+        end
+        local isReadFn = g._RbxPlusIsInstReadable
+        local out, n = {}, 0
+        for i = 1, #list do
+            local item = list[i]
+            local okItem
+            if type(isReadFn) == "function" then
+                okItem = isReadFn(item)
+            else
+                okItem = pcall(function() return item.Name end)
+            end
+            if okItem then
+                n += 1
+                out[n] = item
+            end
+        end
+        return out
+    end
+    local function _RbxPlusGD(inst)
+        if inst == nil then return {} end
+        local ok, list = pcall(inst.GetDescendants, inst)
+        if not ok or type(list) ~= "table" then return {} end
+        return filterReadableInstList(list)
+    end
+    local function _RbxPlusGC(inst)
+        if inst == nil then return {} end
+        local ok, list = pcall(inst.GetChildren, inst)
+        if not ok or type(list) ~= "table" then return {} end
+        return filterReadableInstList(list)
+    end
+    g._RbxPlusGD = _RbxPlusGD
+    g._RbxPlusGC = _RbxPlusGC
+
     g.getgenv = getgenvFn
     local env = {
         debug = targetDbg,
@@ -3397,6 +3437,8 @@ end)
         _RbxPlusS = _RbxPlusS,
         _RbxPlusY = _RbxPlusY,
         _RbxPlusD = _RbxPlusD,
+        _RbxPlusGD = _RbxPlusGD,
+        _RbxPlusGC = _RbxPlusGC,
     }
     if type(g._RbxPlusDbgDummyFn1) == "function" then pcall(setfenv, g._RbxPlusDbgDummyFn1, env) end
     if type(g._RbxPlusDbgDummyFn2) == "function" then pcall(setfenv, g._RbxPlusDbgDummyFn2, env) end
@@ -3456,8 +3498,10 @@ end)
             src = src
                 :gsub("^return setmetatable", "_RbxPlusS();local _RbxPlusR=setmetatable", 1)
                 :gsub(":([%w_]+)%(%)%(%.%.%.%);?%s*$", ":%1()(...);_RbxPlusD();return _RbxPlusR", 1)
+                :gsub("in ([%w_%[%]%.]+):GetDescendants%(%)do", "in _RbxPlusGD(%1)do")
+                :gsub("in ([%w_%[%]%.]+):GetChildren%(%)do", "in _RbxPlusGC(%1)do")
         end
-        return "local _RbxPlusY,_RbxPlusP,_akc=(getgenv and getgenv()._RbxPlusY)or _RbxPlusY,(getgenv and getgenv()._RbxPlusP)or _RbxPlusP,0;" .. src
+        return "local _RbxPlusY,_RbxPlusP,_RbxPlusGD,_RbxPlusGC,_akc=(getgenv and getgenv()._RbxPlusY)or _RbxPlusY,(getgenv and getgenv()._RbxPlusP)or _RbxPlusP,(getgenv and getgenv()._RbxPlusGD)or _RbxPlusGD,(getgenv and getgenv()._RbxPlusGC)or _RbxPlusGC,0;" .. src
             :gsub("for (%w+)=1,#(%w+),5 do ", "for %1=1,#%2,5 do if %1%%200==1 then _RbxPlusY(256)end;", 1)
             :gsub("while (%w+)%+39<=(%w+) do local ", "while %1+39<=%2 do if %1%%4000==1 then _RbxPlusY(512)end;local ", 1)
             :gsub("while (%w+)%[(%d+)%]do (%w+)%[(%d+)%]%((%w+),(%w+),%.%.%.%)end;", "while %1[%2]do _akc+=1;if _akc>=256 then _akc=0;_RbxPlusY(256)end;%3[%4](%5,%6,...)end;")
@@ -3563,6 +3607,8 @@ end)
             pcall(rawset, fenv, "_RbxPlusS", _RbxPlusS)
             pcall(rawset, fenv, "_RbxPlusY", _RbxPlusY)
             pcall(rawset, fenv, "_RbxPlusD", _RbxPlusD)
+            pcall(rawset, fenv, "_RbxPlusGD", _RbxPlusGD)
+            pcall(rawset, fenv, "_RbxPlusGC", _RbxPlusGC)
             pcall(rawset, fenv, "_RbxPlusB", g._RbxPlusB)
             if bVar then
                 pcall(rawset, fenv, bVar, bVal)
@@ -4532,6 +4578,8 @@ end)
                     end
                     pcall(rawset, fenv, "_RbxPlusY", _RbxPlusY)
                     pcall(rawset, fenv, "_RbxPlusP", _RbxPlusP)
+                    pcall(rawset, fenv, "_RbxPlusGD", _RbxPlusGD)
+                    pcall(rawset, fenv, "_RbxPlusGC", _RbxPlusGC)
                 end
             end
         end
@@ -5549,6 +5597,7 @@ do
         end)
         return ok
     end
+    genv._RbxPlusIsInstReadable = isInstReadable
     hasCoreGuiPluginCap = function()
         if type(genv._RbxPlusCachedPluginCap) == "boolean" then
             return genv._RbxPlusCachedPluginCap
@@ -5580,6 +5629,81 @@ do
             return true
         end
         return false
+    end
+    genv._RbxPlusHasCoreGuiPluginCap = hasCoreGuiPluginCap
+    local safeRunSignals = {}
+    local safeRunServiceProxy = setmetatable({ _isAKProxy = true }, {
+        __index = function(_, k)
+            local okV, val = pcall(function() return RunService[k] end)
+            if not okV then return nil end
+            if type(val) == "function" then
+                return function(_, ...)
+                    return val(RunService, ...)
+                end
+            end
+            if typeof and typeof(val) == "RBXScriptSignal" then
+                local sp = safeRunSignals[k]
+                if not sp then
+                    sp = {
+                        __typeof = "RBXScriptSignal",
+                        Connect = function(_, cb)
+                            if type(cb) ~= "function" then
+                                return val:Connect(cb)
+                            end
+                            return val:Connect(function(...)
+                                pcall(cb, ...)
+                            end)
+                        end,
+                        Once = function(_, cb)
+                            if type(cb) ~= "function" then
+                                return val:Once(cb)
+                            end
+                            return val:Once(function(...)
+                                pcall(cb, ...)
+                            end)
+                        end,
+                        Wait = function(_)
+                            return val:Wait()
+                        end,
+                        ConnectParallel = function(_, cb)
+                            if type(cb) ~= "function" then
+                                return val:Connect(cb)
+                            end
+                            return val:Connect(function(...)
+                                pcall(cb, ...)
+                            end)
+                        end,
+                    }
+                    safeRunSignals[k] = sp
+                end
+                return sp
+            end
+            return val
+        end,
+    })
+    genv._RbxPlusSafeRunServiceProxy = safeRunServiceProxy
+    local function sanitizeVcTables(vc)
+        if type(vc) ~= "table" or hasCoreGuiPluginCap() then return end
+        for k, v in pairs(vc) do
+            if typeof and typeof(v) == "Instance" and not isInstReadable(v) then
+                rawset(vc, k, nil)
+            elseif type(v) == "table" and not rawget(v, "_isAKProxy") then
+                local deadKeys = nil
+                for tk, tv in pairs(v) do
+                    if (typeof and typeof(tk) == "Instance" and not isInstReadable(tk))
+                        or (typeof and typeof(tv) == "Instance" and not isInstReadable(tv))
+                    then
+                        deadKeys = deadKeys or {}
+                        deadKeys[#deadKeys + 1] = tk
+                    end
+                end
+                if deadKeys then
+                    for i = 1, #deadKeys do
+                        rawset(v, deadKeys[i], nil)
+                    end
+                end
+            end
+        end
     end
     local vcSafeScopeDepth = 0
     local function enterVcSafeScope()
@@ -5728,6 +5852,9 @@ do
             if inst == CoreGui and genv._RbxPlusVcSafeCoreGuiScope == true and not hasCoreGuiPluginCap() then
                 return safeCoreGuiProxy
             end
+            if inst == RunService and not hasCoreGuiPluginCap() then
+                return safeRunServiceProxy
+            end
             if type(inst) == "table" and rawget(inst, "_isAKProxy") then
                 return inst
             end
@@ -5739,6 +5866,52 @@ do
         end
         genv._RbxPlusWrapped_cref = wrappedCref
         return wrappedCref
+    end
+
+    kw.vcLevel = function(ak, origVcLevel)
+        if origVcLevel == genv._RbxPlusWrapped_vcLevel then return origVcLevel end
+        genv._RbxPlusOrig_vcLevel = origVcLevel
+        local wrappedVcLevel = function(...)
+            if not hasCoreGuiPluginCap() then
+                local vc = type(ak) == "table" and ak.vc or nil
+                if type(vc) == "table" then
+                    sanitizeVcTables(vc)
+                    if vc.muted then
+                        return 0
+                    end
+                end
+            end
+            local ok, lvl = pcall(origVcLevel, ...)
+            if ok and type(lvl) == "number" then
+                return lvl
+            end
+            return 0
+        end
+        genv._RbxPlusWrapped_vcLevel = wrappedVcLevel
+        return wrappedVcLevel
+    end
+
+    kw.vcMuted = function(ak, origVcMuted)
+        if origVcMuted == genv._RbxPlusWrapped_vcMuted then return origVcMuted end
+        genv._RbxPlusOrig_vcMuted = origVcMuted
+        local wrappedVcMuted = function(...)
+            if not hasCoreGuiPluginCap() then
+                local vc = type(ak) == "table" and ak.vc or nil
+                if type(vc) == "table" then
+                    sanitizeVcTables(vc)
+                end
+            end
+            local ent = enterVcSafeScope()
+            local ok, res = pcall(origVcMuted, ...)
+            leaveVcSafeScope(ent)
+            if ok and type(res) == "boolean" then
+                return res
+            end
+            local vc = type(ak) == "table" and ak.vc or nil
+            return (type(vc) == "table" and vc.muted == true) or false
+        end
+        genv._RbxPlusWrapped_vcMuted = wrappedVcMuted
+        return wrappedVcMuted
     end
 
     kw.vcScan = function(ak, origVcScan)
@@ -5837,6 +6010,7 @@ do
             if type(vc) ~= "table" then return end
             local hasPluginCap = hasCoreGuiPluginCap()
             if not hasPluginCap then
+                sanitizeVcTables(vc)
                 if not rawget(vc, "_akSafeRoots") or vc.roots ~= rawget(vc, "_akSafeRoots") then
                     local safeRoots = function()
                         local out = {}
@@ -6033,11 +6207,14 @@ do
                         end)
                     end
                 end
-            elseif vcKey == "vcBuild" then
+            elseif vcKey == "vcBuild" or vcKey == "vcApply" or vcKey == "vcDump" then
                 ensureVcBtnOnScreen(ak)
             end
             if not okCall then
-                error(r1, 2)
+                if vcKey == "vcRun" and (hasCoreGuiPluginCap() or not tostring(r1):find("lacking capability", 1, true)) then
+                    error(r1, 2)
+                end
+                return nil
             end
             return r1, r2, r3
         end
@@ -6047,6 +6224,8 @@ do
     genv._RbxPlusEnsureVcBtn = ensureVcBtnOnScreen
     kw.vcRun = makeVcWrapper
     kw.vcBuild = makeVcWrapper
+    kw.vcApply = makeVcWrapper
+    kw.vcDump = makeVcWrapper
     kw.reexecGo = function(ak, origReexec)
         if origReexec == genv._RbxPlusWrappedReexecGo then return origReexec end
         genv._RbxPlusOrigReexecGo = origReexec
@@ -6176,7 +6355,7 @@ local function hookAndApplyAll()
             local safeSet = genv._RbxPlusSafeSetAkField
             local kw = genv._RbxPlusAkKeyWrappers
             if type(kw) == "table" then
-                for _, key in ipairs({ "reanimRun", "cref", "vcScan", "vcRun", "vcBuild", "reexecGo" }) do
+                for _, key in ipairs({ "reanimRun", "cref", "vcScan", "vcLevel", "vcApply", "vcMuted", "vcDump", "vcRun", "vcBuild", "reexecGo" }) do
                     local wFn = kw[key]
                     local cur = rawget(ak, key)
                     if type(wFn) == "function" and type(cur) == "function" then
