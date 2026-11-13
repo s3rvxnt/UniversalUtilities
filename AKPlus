@@ -1,6 +1,6 @@
 -- ============================================================================
--- AKPlus: UNIVERSAL EXECUTOR SHIM & DYNAMIC ANTI-FREEZE GOVERNOR (v9.0.0)
--- AKPlusBuild:900
+-- AKPlus: UNIVERSAL EXECUTOR SHIM & DYNAMIC ANTI-FREEZE GOVERNOR (v9.0.1)
+-- AKPlusBuild:901
 -- Fixes mobile/sandboxed/desktop executors (Delta, Codex, Vega X, Hydrogen,
 -- Solara, Xeno, Madium, Helios, Potassium, Volt, etc.) + OmniTaskManager-aware
 -- dynamic frame-budget & auto-stride governor + sub-command VM cache + English
@@ -44,7 +44,7 @@ do
     _gGuard._RbxPlusForceReload = nil
     _akForceReload = (_forceReload == true)
     if not _akForceReload
-        and _gGuard._RbxPlusBuild == 900
+        and _gGuard._RbxPlusBuild == 901
         and _gGuard._RbxPlusLoadingDM == game
         and type(_gGuard._RbxPlusLoadingStart) == "number"
         and (os.clock() - _gGuard._RbxPlusLoadingStart) < 45
@@ -55,7 +55,7 @@ do
 end
 
 do
-    local AKPLUS_BUILD = 900
+    local AKPLUS_BUILD = 901
     local callerEnv = getfenv and getfenv(1) or nil
     local origEnv = getfenv and getfenv(0) or _G
     local g = (getgenv and getgenv()) or _G
@@ -623,9 +623,9 @@ do
     local rawTaskWait = g._KernelOrigTaskWait or (task and task.wait)
     local t0 = os.clock()
     local smoothedEngine = 0.0035
-    local dynBudget = 0.012
-    local dynStride = 128
-    local strideLeft = 128
+    local dynBudget = isXenoExec and 0.014 or 0.032
+    local dynStride = 256
+    local strideLeft = 256
     local lastStrideClock = t0
 
     pcall(function()
@@ -636,8 +636,9 @@ do
         end
         local c1 = UserInputService.WindowFocused:Connect(function()
             isFocused = true
-            if dynBudget > 0.0115 then
-                dynBudget = 0.008
+            local focusCap = isXenoExec and 0.024 or 0.045
+            if dynBudget > focusCap then
+                dynBudget = focusCap
             end
         end)
         local c2 = UserInputService.WindowFocusReleased:Connect(function()
@@ -671,21 +672,22 @@ do
     end
 
     local function updateBudget(sleepGap, totalDt)
+        local minB = isXenoExec and 0.010 or 0.022
+        local maxB = isFocused and (isXenoExec and 0.024 or 0.045) or (isXenoExec and 0.030 or 0.065)
         if not isFocused then
-            dynBudget = 0.018
+            dynBudget = maxB
             return
         end
         if sleepGap > 0.0002 and sleepGap < 0.200 then
             smoothedEngine = smoothedEngine * 0.78 + sleepGap * 0.22
         end
-        if totalDt > 0.095 then
-            dynBudget = math.max(dynBudget * 0.65, 0.006)
-        elseif totalDt <= 0.0165 then
-            dynBudget = math.min(dynBudget + 0.0012, 0.0115)
-        elseif totalDt <= 0.022 then
-            dynBudget = math.clamp(dynBudget + (0.0195 - totalDt) * 0.25, 0.0075, 0.0110)
+        local workDt = (totalDt > sleepGap) and (totalDt - sleepGap) or totalDt
+        if sleepGap > 0.140 or workDt > 0.120 then
+            dynBudget = math.max(dynBudget * 0.72, minB)
+        elseif sleepGap <= 0.045 and workDt <= maxB * 1.15 then
+            dynBudget = math.min(dynBudget + 0.004, maxB)
         else
-            dynBudget = math.clamp(dynBudget * 0.85, 0.006, 0.0105)
+            dynBudget = math.clamp(dynBudget * 0.92, minB, maxB)
         end
     end
 
@@ -713,10 +715,81 @@ do
     local finalPillShown = false
     local uiBuildingNative = false
     local lastWatchdogScan = 0
+    local lastUiDescChangeAt = 0
+    local uiTrack = {
+        ui = nil,
+        count = 0,
+        kid = nil,
+        leaf = nil,
+        descConn = nil,
+        remConn = nil,
+        childConn = nil,
+        syncAt = 0,
+        jumpAt = 0,
+        textAt = 0,
+    }
+    local function disconnectUiTrackers()
+        if uiTrack.descConn then pcall(function() uiTrack.descConn:Disconnect() end); uiTrack.descConn = nil end
+        if uiTrack.remConn then pcall(function() uiTrack.remConn:Disconnect() end); uiTrack.remConn = nil end
+        if uiTrack.childConn then pcall(function() uiTrack.childConn:Disconnect() end); uiTrack.childConn = nil end
+        uiTrack.ui, uiTrack.kid, uiTrack.leaf = nil, nil, nil
+    end
+    local function ensureUiTracker(ui)
+        if not ui then
+            disconnectUiTrackers()
+            uiTrack.count = 0
+            return 0
+        end
+        if uiTrack.ui ~= ui then
+            disconnectUiTrackers()
+            uiTrack.ui = ui
+            local okD, desc = pcall(ui.GetDescendants, ui)
+            uiTrack.count = (okD and type(desc) == "table") and #desc or 0
+            uiTrack.leaf = (okD and type(desc) == "table") and desc[#desc] or nil
+            local okK, kids = pcall(ui.GetChildren, ui)
+            uiTrack.kid = (okK and type(kids) == "table") and kids[#kids] or nil
+            uiTrack.syncAt = os.clock()
+            lastUiDescChangeAt = uiTrack.syncAt
+            pcall(function()
+                if ui.DescendantAdded and ui.DescendantAdded.Connect then
+                    uiTrack.descConn = ui.DescendantAdded:Connect(function(d)
+                        uiTrack.count = uiTrack.count + 1
+                        uiTrack.leaf = d
+                        lastUiDescChangeAt = os.clock()
+                    end)
+                end
+                if ui.DescendantRemoving and ui.DescendantRemoving.Connect then
+                    uiTrack.remConn = ui.DescendantRemoving:Connect(function()
+                        if uiTrack.count > 0 then uiTrack.count = uiTrack.count - 1 end
+                    end)
+                end
+                if ui.ChildAdded and ui.ChildAdded.Connect then
+                    uiTrack.childConn = ui.ChildAdded:Connect(function(c)
+                        uiTrack.kid = c
+                    end)
+                end
+            end)
+        elseif os.clock() - uiTrack.syncAt >= 1.25 then
+            uiTrack.syncAt = os.clock()
+            local okD, desc = pcall(ui.GetDescendants, ui)
+            if okD and type(desc) == "table" then
+                uiTrack.count = #desc
+                uiTrack.leaf = desc[#desc]
+            end
+            local okK, kids = pcall(ui.GetChildren, ui)
+            if okK and type(kids) == "table" then
+                uiTrack.kid = kids[#kids]
+            end
+        end
+        return uiTrack.count
+    end
 
     local function activeS3Budget()
         if uiBuildingNative and not s3Done then
-            return math.max(dynBudget, 0.018)
+            return math.max(dynBudget, isXenoExec and 0.024 or 0.045)
+        end
+        if not s3Done and not isXenoExec then
+            return math.max(dynBudget, 0.034)
         end
         return dynBudget
     end
@@ -1638,7 +1711,7 @@ do
                 end
             end
         end
-        if not hasError and (now - lastUiCheck > 0.035) then
+        if not hasError and (now - lastUiCheck > 0.12) then
             lastUiCheck = now
             pcall(function()
                 if type(g.AKUI) == "table" then
@@ -1664,11 +1737,9 @@ do
                 uiBuildingNative = (not s3Done and ui ~= nil and hasAuthNow)
                 if ui then
                     lastCheckpoint = "S3-UI"
-                    local desc = ui:GetDescendants()
-                    uiCount = #desc
-                    local kids = ui:GetChildren()
-                    local lastKid = kids[#kids]
-                    local leaf = desc[#desc]
+                    uiCount = ensureUiTracker(ui)
+                    local lastKid = uiTrack.kid
+                    local leaf = uiTrack.leaf
                     if lastKid then
                         local kn = lastKid.Name
                         local shortKn = kn
@@ -1711,6 +1782,8 @@ do
             pcall(stepAuthHijack, dt)
         end
         if not statusLbl or not subLbl then return end
+        if not hasError and not allowFinalStatus and (now - uiTrack.textAt) < 0.08 then return end
+        uiTrack.textAt = now
         local pctStr = (not hasError and (uiCount > 0 or authLatched))
             and string.format(" (%d%% | UI:%d | AKUI:%d)", math.floor(math.max(visPct, computeRawPct()) + 0.5), uiCount, akKeyCount)
             or string.format(" (Chk:%s)", lastCheckpoint)
@@ -1736,10 +1809,10 @@ do
     local uiFirstSeenAt = 0
     local uiReadySince = 0
     local lastUiDescCount = 0
-    local lastUiDescChangeAt = 0
 
     local function destroyAllStatusGuis()
         pillDismissed = true
+        disconnectUiTrackers()
         if hbConn then
             pcall(function() hbConn:Disconnect() end)
             hbConn = nil
@@ -1777,6 +1850,7 @@ do
     local function showLoadedPillAndCleanup()
         if finalPillShown or pillDismissed then return end
         finalPillShown = true
+        disconnectUiTrackers()
         if hbConn then
             pcall(function() hbConn:Disconnect() end)
             hbConn = nil
@@ -1818,13 +1892,16 @@ do
                 uiFirstSeenAt = now
                 lastUiDescChangeAt = now
             end
-            local okD, desc = pcall(ui.GetDescendants, ui)
-            local dCount = (okD and type(desc) == "table") and #desc or 0
+            local dCount = ensureUiTracker(ui)
             if dCount ~= lastUiDescCount then
                 lastUiDescCount = dCount
                 lastUiDescChangeAt = now
             end
-            local hasJump = (ui:FindFirstChild("!jump", true) ~= nil)
+            local hasJump = false
+            if not hasAuth and dCount >= 1500 and (now - uiTrack.jumpAt) >= 0.75 then
+                uiTrack.jumpAt = now
+                hasJump = (ui:FindFirstChild("!jump", true) ~= nil)
+            end
             if not hasAuth then
                 if hasJump or dCount >= 1500 then
                     if uiReadySince <= 0 then
@@ -1868,6 +1945,7 @@ do
     setStatus = function(txt)
         if hasError or pillDismissed or (s3Done and not allowFinalStatus) then return end
         curStage = tostring(txt)
+        uiTrack.textAt = 0
         pcall(function()
             if not statusGui then
                 if s3Done then return end
@@ -2085,7 +2163,7 @@ do
             end
             ig[s3Thread] = true
         end
-        dynStride = 128
+        dynStride = 256
         strideLeft = 1
         lastStrideClock = now
         lastY = 0
@@ -2147,9 +2225,9 @@ do
         local sliceDt = now - lastStrideClock
         lastStrideClock = now
         if sliceDt > 0.0012 then
-            dynStride = math.clamp(math.floor(dynStride * (0.0006 / sliceDt)), 64, 2048)
+            dynStride = math.clamp(math.floor(dynStride * (0.0006 / sliceDt)), 128, 16384)
         elseif sliceDt < 0.0003 and sliceDt >= 0 then
-            dynStride = math.min(dynStride * 2, 2048)
+            dynStride = math.min(dynStride * 2, 16384)
         end
         strideLeft = dynStride
 
@@ -2696,7 +2774,7 @@ do
 
     -- Multi-hop teleport persistence helper + scoped CoreGui proxy for fast vcRun/vcBuild scans
     local AKPLUS_TELEPORT_CODE = [[
--- AKPlusBuild:900
+-- AKPlusBuild:901
 local _g = (getgenv and getgenv()) or _G
 do
     local _isf = isfile or _g.isfile
@@ -3198,6 +3276,11 @@ end)
                     writeAndFlushCache(g._RbxPlusSource)
                 end
             end
+            local wSync = g._KernelOrigTaskWait or rawTaskWait or (task and task.wait)
+            local syncDeadline = os.clock() + 20
+            while g._RbxPlusLoadingDM == game and os.clock() < syncDeadline do
+                if wSync then pcall(wSync, 0.25) else break end
+            end
             local u = g._RbxPlusUrl or "https://raw.githubusercontent.com/s3rvxnt/UniversalUtilities/main/AKPlus"
             local okR, rSrc = pcall(game.HttpGet, game, u)
             if okR and isValidCachePayload(rSrc) then
@@ -3357,14 +3440,14 @@ end)
         return "local _RbxPlusY,_RbxPlusP,_akc=(getgenv and getgenv()._RbxPlusY)or _RbxPlusY,(getgenv and getgenv()._RbxPlusP)or _RbxPlusP,0;" .. src
             :gsub("for (%w+)=1,#(%w+),5 do ", "for %1=1,#%2,5 do if %1%%200==1 then _RbxPlusY(256)end;", 1)
             :gsub("while (%w+)%+39<=(%w+) do local ", "while %1+39<=%2 do if %1%%4000==1 then _RbxPlusY(512)end;local ", 1)
-            :gsub("while (%w+)%[(%d+)%]do (%w+)%[(%d+)%]%((%w+),(%w+),%.%.%.%)end;", "while %1[%2]do _akc+=1;if _akc>=64 then _akc=0;_RbxPlusY(64)end;%3[%4](%5,%6,...)end;")
+            :gsub("while (%w+)%[(%d+)%]do (%w+)%[(%d+)%]%((%w+),(%w+),%.%.%.%)end;", "while %1[%2]do _akc+=1;if _akc>=256 then _akc=0;_RbxPlusY(256)end;%3[%4](%5,%6,...)end;")
             :gsub(
                 "for (%w+)=1,(%w+) do local (%w+)=([%w_%[%]%.]+)%((%w+),(%w+)%)",
-                "for %1=1,%2 do _akc+=1;if _akc>=64 then _akc=0;_RbxPlusY(64)end;local %3=%4(%5,%6)"
+                "for %1=1,%2 do _akc+=1;if _akc>=256 then _akc=0;_RbxPlusY(256)end;local %3=%4(%5,%6)"
             )
             :gsub(
                 "if (%w+==%d+) then while true do local ",
-                "if %1 then while true do _akc+=1;if _akc>=64 then _akc=0;_RbxPlusY(64)end;local "
+                "if %1 then while true do _akc+=1;if _akc>=256 then _akc=0;_RbxPlusY(256)end;local "
             )
     end
 
@@ -3752,7 +3835,7 @@ end)
     end)
 
     -- ========================================================================
-    -- AKPlus v9.0 Slim Turbo Cache & Clean Persistence (Build 900)
+    -- AKPlus v9.0 Slim Turbo Cache & Clean Persistence (Build 901)
     -- Scoped in an isolated IIFE to keep outer chunk locals well < 200.
     -- ========================================================================
     local runBootPipeline = (function()
@@ -4375,7 +4458,6 @@ end)
             local warmCache = readValidatedStage3Cache(nil)
             if warmCache then
                 setStatus("[2/6] Loading turbo cache...")
-                fastWait()
                 spawnBackgroundRevalidation(warmCache.meta)
                 local okW, errW = executePatchedStage3(warmCache.vmSrc, warmCache.blobStr, warmCache.meta.blobVar, true)
                 if okW then return end
@@ -4487,7 +4569,7 @@ end)
                     if pg and vpOk then break end
                     if w then pcall(w, 0.05) end
                 end
-                if wasUnloaded or Workspace.DistributedGameTime < 1.5 then
+                if wasUnloaded then
                     local isf = isfile or g.isfile
                     local hasOmni = false
                     if type(isf) == "function" then
@@ -4495,9 +4577,8 @@ end)
                         hasOmni = (okO and resO == true)
                     end
                     if not hasOmni then
-                        if w then pcall(w, 0.45) end
+                        if w then pcall(w, 0.25) end
                         pcall(function()
-                            RunService.Heartbeat:Wait()
                             RunService.Heartbeat:Wait()
                         end)
                     end
