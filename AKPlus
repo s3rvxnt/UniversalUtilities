@@ -1,6 +1,6 @@
 -- ============================================================================
--- AKPlus: UNIVERSAL EXECUTOR SHIM & DYNAMIC ANTI-FREEZE GOVERNOR (v9.0.7)
--- AKPlusBuild:907
+-- AKPlus: UNIVERSAL EXECUTOR SHIM & DYNAMIC ANTI-FREEZE GOVERNOR (v9.0.8)
+-- AKPlusBuild:908
 -- Fixes mobile/sandboxed/desktop executors (Delta, Codex, Vega X, Hydrogen,
 -- Solara, Xeno, Madium, Helios, Potassium, Volt, etc.) + OmniTaskManager-aware
 -- dynamic frame-budget & auto-stride governor + sub-command VM cache + English
@@ -44,7 +44,7 @@ do
     _gGuard._RbxPlusForceReload = nil
     _akForceReload = (_forceReload == true)
     if not _akForceReload
-        and _gGuard._RbxPlusBuild == 907
+        and _gGuard._RbxPlusBuild == 908
         and _gGuard._RbxPlusLoadingDM == game
         and type(_gGuard._RbxPlusLoadingStart) == "number"
         and (os.clock() - _gGuard._RbxPlusLoadingStart) < 45
@@ -55,7 +55,7 @@ do
 end
 
 do
-    local AKPLUS_BUILD = 907
+    local AKPLUS_BUILD = 908
     local callerEnv = getfenv and getfenv(1) or nil
     local origEnv = getfenv and getfenv(0) or _G
     local g = (getgenv and getgenv()) or _G
@@ -2800,7 +2800,7 @@ do
 
     -- Multi-hop teleport persistence helper + scoped CoreGui proxy for fast vcRun/vcBuild scans
     local AKPLUS_TELEPORT_CODE = [[
--- AKPlusBuild:907
+-- AKPlusBuild:908
 local _g = (getgenv and getgenv()) or _G
 do
     local _isf = isfile or _g.isfile
@@ -5752,13 +5752,31 @@ do
             genv._RbxPlusVcSafeCoreGuiScope = (vcSafeScopeDepth > 0)
         end
     end
+    local BLOCKED_COREGUI_NAMES = {
+        RobloxGui = true,
+        TopBarApp = true,
+        ExperienceChat = true,
+        PurchasePrompt = true,
+        RobloxNetworkPauseNotification = true,
+        TeleportGui = true,
+    }
+    local function isSafeCoreGuiChild(inst)
+        if not isInstReadable(inst) then return false end
+        if not hasCoreGuiPluginCap() then
+            local okN, nm = pcall(function() return inst.Name end)
+            if not okN or BLOCKED_COREGUI_NAMES[nm] then
+                return false
+            end
+        end
+        return true
+    end
     local safeChildAddedProxy = {
         Connect = function(_, cb)
             local dummy = { Connected = false, Disconnect = function() end }
             if type(cb) ~= "function" then return dummy end
             local okC, conn = pcall(function()
                 return CoreGui.ChildAdded:Connect(function(ch)
-                    if isInstReadable(ch) then
+                    if isSafeCoreGuiChild(ch) then
                         local ent = enterVcSafeScope()
                         pcall(cb, ch)
                         leaveVcSafeScope(ent)
@@ -5780,7 +5798,7 @@ do
         if okK and type(kids) == "table" then
             for i = 1, #kids do
                 local ch = kids[i]
-                if isInstReadable(ch) then
+                if isSafeCoreGuiChild(ch) then
                     out[#out + 1] = ch
                 end
             end
@@ -5794,7 +5812,7 @@ do
             if okK and type(kids) == "table" then
                 for i = 1, #kids do
                     local ch = kids[i]
-                    if isInstReadable(ch) then
+                    if isSafeCoreGuiChild(ch) then
                         out[#out + 1] = ch
                         walkReadable(ch)
                     end
@@ -5805,9 +5823,12 @@ do
         return out
     end
     function safeCoreGuiMethods:FindFirstChild(nm, rec)
+        if not hasCoreGuiPluginCap() and BLOCKED_COREGUI_NAMES[nm] then
+            return nil
+        end
         if not rec then
             local okF, found = pcall(CoreGui.FindFirstChild, CoreGui, nm, false)
-            if okF and found and isInstReadable(found) then
+            if okF and found and isSafeCoreGuiChild(found) then
                 return found
             end
             return nil
@@ -5859,7 +5880,7 @@ do
                     local mRes = table.pack(pcall(val, CoreGui, ...))
                     if mRes[1] then
                         local r1 = mRes[2]
-                        if typeof and typeof(r1) == "Instance" and not isInstReadable(r1) then
+                        if typeof and typeof(r1) == "Instance" and not isSafeCoreGuiChild(r1) then
                             return nil
                         end
                         return (unpack or table.unpack)(mRes, 2, mRes.n)
@@ -5867,7 +5888,7 @@ do
                     return nil
                 end
             end
-            if typeof and typeof(val) == "Instance" and not isInstReadable(val) then
+            if typeof and typeof(val) == "Instance" and not isSafeCoreGuiChild(val) then
                 return nil
             end
             return val
@@ -5952,15 +5973,15 @@ do
         genv._RbxPlusOrig_vcScan = origVcScan
         local wrappedVcScan = function(...)
             if not hasCoreGuiPluginCap() then
-                return 0
+                return {}
             end
             local ent = enterVcSafeScope()
             local sRes = table.pack(pcall(origVcScan, ...))
             leaveVcSafeScope(ent)
-            if sRes[1] then
+            if sRes[1] and type(sRes[2]) == "table" then
                 return (unpack or table.unpack)(sRes, 2, sRes.n)
             end
-            return 0
+            return {}
         end
         genv._RbxPlusWrapped_vcScan = wrappedVcScan
         return wrappedVcScan
@@ -6247,6 +6268,9 @@ do
                 local errMsg = callRes[2]
                 if vcKey == "vcRun" and (hasCoreGuiPluginCap() or not tostring(errMsg):find("lacking capability", 1, true)) then
                     error(errMsg, 2)
+                end
+                if vcKey == "vcDump" then
+                    return "{}"
                 end
                 return nil
             end
