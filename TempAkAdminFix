@@ -1,6 +1,6 @@
 -- ============================================================================
--- AKPlus: UNIVERSAL EXECUTOR SHIM & DYNAMIC ANTI-FREEZE GOVERNOR (v8.3.4)
--- AKPlusBuild:834
+-- AKPlus: UNIVERSAL EXECUTOR SHIM & DYNAMIC ANTI-FREEZE GOVERNOR (v8.3.5)
+-- AKPlusBuild:835
 -- Fixes mobile/sandboxed/desktop executors (Delta, Codex, Vega X, Hydrogen,
 -- Solara, Xeno, Madium, Helios, Potassium, Volt, etc.) + OmniTaskManager-aware
 -- dynamic frame-budget & auto-stride governor + sub-command VM cache + English
@@ -42,7 +42,7 @@ do
     _gGuard._RbxUIForceReload = nil
     _akForceReload = (_forceReload == true)
     if not _akForceReload
-        and _gGuard._RbxUIPlusBuild == 834
+        and _gGuard._RbxUIPlusBuild == 835
         and _gGuard._RbxUIPlusLoadingDM == game
         and type(_gGuard._RbxUIPlusLoadingStart) == "number"
         and (os.clock() - _gGuard._RbxUIPlusLoadingStart) < 45
@@ -52,7 +52,7 @@ do
 end
 
 do
-    local AKPLUS_BUILD = 834
+    local AKPLUS_BUILD = 835
     local callerEnv = getfenv and getfenv(1) or nil
     local origEnv = getfenv and getfenv(0) or _G
     local g = (getgenv and getgenv()) or _G
@@ -2699,7 +2699,7 @@ do
 
     -- Multi-hop teleport persistence helper + scoped CoreGui proxy for fast vcRun/vcBuild scans
     local AKPLUS_TELEPORT_CODE = [[
--- AKPlusBuild:833
+-- AKPlusBuild:835
 local _g = (getgenv and getgenv()) or _G
 do
     local _isf = isfile or _g.isfile
@@ -4546,7 +4546,76 @@ do
             end
         end)
     end
-    local patchedVcDockAt = setmetatable({}, { __mode = "k" })
+    local hookedUnibarInsts = setmetatable({}, { __mode = "k" })
+    local unibarHbAttached = false
+    local function syncUnibarCompact(ak)
+        local vc = type(ak) == "table" and ak.vc or nil
+        if type(vc) ~= "table" then return nil, nil end
+        local tba = CoreGui:FindFirstChild("TopBarApp")
+        local tmm = (vc.orig and typeof(vc.orig) == "Instance" and vc.orig:FindFirstAncestor("toggle_mic_mute"))
+            or (tba and tba:FindFirstChild("toggle_mic_mute", true))
+        if not (tmm and tmm.Parent) then return nil, nil end
+        if not (vc.on or tmm.Visible == false or (tmm:IsA("GuiObject") and tmm.Size.X.Offset == 0)) then
+            return nil, nil
+        end
+        local u3 = tmm.Parent
+        local unibar = u3 and u3.Parent
+        local u2 = unibar and unibar.Parent
+        local uMenu = u2 and u2.Parent
+        local ulf = uMenu and uMenu.Parent
+        local stacked = ulf and ulf:FindFirstChild("StackedElements")
+        if not (u3 and unibar and uMenu and u3:IsA("GuiObject") and unibar:IsA("GuiObject") and uMenu:IsA("GuiObject")) then
+            return nil, nil
+        end
+        local visIcons = {}
+        for _, ch in ipairs(u3:GetChildren()) do
+            if ch ~= tmm and ch:IsA("GuiObject") and ch.Visible and ch.Name ~= "toggle_mic_mute" and ch.Size.X.Offset > 0 then
+                visIcons[#visIcons + 1] = ch
+            end
+        end
+        table.sort(visIcons, function(a, b)
+            return a.Position.X.Offset < b.Position.X.Offset
+        end)
+        for i = 1, #visIcons do
+            local ch = visIcons[i]
+            local wantX = 4 + (i - 1) * 44
+            if ch.Position.X.Offset ~= wantX then
+                ch.Position = UDim2.new(0, wantX, ch.Position.Y.Scale, ch.Position.Y.Offset)
+            end
+        end
+        local dockInUnibar = (type(ak.prefs) == "table" and ak.prefs.island == false)
+        local slotCount = #visIcons + (dockInUnibar and 1 or 0)
+        local targetW = (slotCount > 0) and (8 + slotCount * 44) or 0
+        local targetStackedX = slotCount * 44
+        if unibar.Size.X.Offset ~= targetW then
+            unibar.Size = UDim2.new(0, targetW, unibar.Size.Y.Scale, unibar.Size.Y.Offset)
+        end
+        if uMenu.Size.X.Offset ~= targetW then
+            uMenu.Size = UDim2.new(0, targetW, uMenu.Size.Y.Scale, uMenu.Size.Y.Offset)
+        end
+        if stacked and stacked:IsA("GuiObject") and stacked.Position.X.Offset ~= targetStackedX then
+            stacked.Position = UDim2.new(0, targetStackedX, stacked.Position.Y.Scale, stacked.Position.Y.Offset)
+        end
+        if not hookedUnibarInsts[unibar] then
+            hookedUnibarInsts[unibar] = true
+            trackConn(unibar:GetPropertyChangedSignal("Size"):Connect(function()
+                pcall(syncUnibarCompact, ak)
+            end))
+        end
+        if not hookedUnibarInsts[uMenu] then
+            hookedUnibarInsts[uMenu] = true
+            trackConn(uMenu:GetPropertyChangedSignal("Size"):Connect(function()
+                pcall(syncUnibarCompact, ak)
+            end))
+        end
+        if stacked and stacked:IsA("GuiObject") and not hookedUnibarInsts[stacked] then
+            hookedUnibarInsts[stacked] = true
+            trackConn(stacked:GetPropertyChangedSignal("Position"):Connect(function()
+                pcall(syncUnibarCompact, ak)
+            end))
+        end
+        return unibar, #visIcons
+    end
     local function ensureVcBtnOnScreen(ak)
         pcall(function()
             local vc = type(ak) == "table" and ak.vc or nil
@@ -4563,42 +4632,73 @@ do
                     return out
                 end
             end
-            if not patchedVcDockAt[vc] then
-                patchedVcDockAt[vc] = true
-                vc.dockAt = function(inst)
-                    if typeof(inst) ~= "Instance" or not inst:IsA("GuiObject") then
-                        return nil
-                    end
-                    while inst and inst:IsA("GuiObject") and inst.AbsoluteSize.X < 8 do
-                        inst = inst.Parent
-                    end
-                    if not (inst and inst:IsA("GuiObject")) then
-                        return nil
-                    end
-                    local sg = inst:FindFirstAncestorOfClass("ScreenGui")
-                    if not sg then
-                        return nil
-                    end
-                    local center = inst.AbsolutePosition + (inst.AbsoluteSize / 2)
+            local function customDockAt(inst)
+                if typeof(inst) ~= "Instance" or not inst:IsA("GuiObject") then
+                    return nil
+                end
+                while inst and inst:IsA("GuiObject") and inst.AbsoluteSize.X < 8 do
+                    inst = inst.Parent
+                end
+                if not (inst and inst:IsA("GuiObject")) then
+                    return nil
+                end
+                local sg = inst:FindFirstAncestorOfClass("ScreenGui")
+                if not sg then
+                    return nil
+                end
+                local center = inst.AbsolutePosition + (inst.AbsoluteSize / 2)
+                local root = ak.root
+                local rootPos = (root and typeof(root) == "Instance") and root.AbsolutePosition or Vector2.new(0, -58)
+                local pos = center - rootPos
+                if pos.X <= 0 or pos.Y <= 0 then
+                    return nil
+                end
+                return pos - Vector2.new(10, 5)
+            end
+            local function customDockPos()
+                local okU, unibar, visCount = pcall(syncUnibarCompact, ak)
+                if okU and unibar and type(visCount) == "number" then
                     local root = ak.root
                     local rootPos = (root and typeof(root) == "Instance") and root.AbsolutePosition or Vector2.new(0, -58)
-                    local pos = center - rootPos
-                    if pos.X <= 0 or pos.Y <= 0 then
-                        return nil
-                    end
-                    return pos
+                    local slotCenter = (unibar.AbsolutePosition - rootPos) + Vector2.new(4 + visCount * 44 + 22, 22)
+                    return slotCenter - Vector2.new(10, 5)
                 end
-                vc.dockScan = 0
+                if vc.orig and typeof(vc.orig) == "Instance" and vc.orig.Parent then
+                    local p = customDockAt(vc.orig)
+                    if p then return p end
+                end
+                if vc.dockFind then
+                    local okF, dObj = pcall(vc.dockFind)
+                    if okF and dObj then
+                        local p = customDockAt(dObj)
+                        if p then return p end
+                    end
+                end
+                return nil
             end
-            local btn = vc.btn
-            if type(vc.dockPos) == "function" then
-                local okP, p = pcall(vc.dockPos)
-                if okP and typeof(p) == "Vector2" then
-                    vc.iPos = UDim2.fromOffset(p.X, p.Y)
-                    if btn and typeof(btn) == "Instance" and btn:IsA("GuiObject") then
-                        btn.Position = vc.iPos
+            if not rawget(vc, "_akCustomDockAt") or vc.dockAt ~= rawget(vc, "_akCustomDockAt") then
+                rawset(vc, "_akCustomDockAt", customDockAt)
+                vc.dockAt = customDockAt
+            end
+            if not rawget(vc, "_akCustomDockPos") or vc.dockPos ~= rawget(vc, "_akCustomDockPos") then
+                rawset(vc, "_akCustomDockPos", customDockPos)
+                vc.dockPos = customDockPos
+            end
+            vc.dockScan = 0
+            syncUnibarCompact(ak)
+            if not unibarHbAttached then
+                unibarHbAttached = true
+                local lastSync = 0
+                trackConn(RunService.Heartbeat:Connect(function()
+                    local now = os.clock()
+                    if (now - lastSync) < 0.1 then return end
+                    lastSync = now
+                    local curAk = genv.AKUI
+                    local curVc = type(curAk) == "table" and curAk.vc or nil
+                    if type(curVc) == "table" and curVc.on then
+                        pcall(syncUnibarCompact, curAk)
                     end
-                end
+                end))
             end
         end)
     end
@@ -4664,6 +4764,7 @@ do
         genv["_RbxUIWrapped_" .. vcKey] = wrappedVcFn
         return wrappedVcFn
     end
+    genv._RbxUIEnsureVcBtn = ensureVcBtnOnScreen
     kw.vcRun = makeVcWrapper
     kw.vcBuild = makeVcWrapper
     kw.reexecGo = function(ak, origReexec)
@@ -4810,6 +4911,10 @@ local function hookAndApplyAll()
                     end
                 end
             end
+        end
+
+        if type(genv._RbxUIEnsureVcBtn) == "function" then
+            pcall(genv._RbxUIEnsureVcBtn, ak)
         end
 
         -- Hook any UI Rejoin buttons directly as well
