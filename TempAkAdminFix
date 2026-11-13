@@ -1,6 +1,6 @@
 -- ============================================================================
--- AKPlus: UNIVERSAL EXECUTOR SHIM & DYNAMIC ANTI-FREEZE GOVERNOR (v9.0.1)
--- AKPlusBuild:901
+-- AKPlus: UNIVERSAL EXECUTOR SHIM & DYNAMIC ANTI-FREEZE GOVERNOR (v9.0.2)
+-- AKPlusBuild:902
 -- Fixes mobile/sandboxed/desktop executors (Delta, Codex, Vega X, Hydrogen,
 -- Solara, Xeno, Madium, Helios, Potassium, Volt, etc.) + OmniTaskManager-aware
 -- dynamic frame-budget & auto-stride governor + sub-command VM cache + English
@@ -44,7 +44,7 @@ do
     _gGuard._RbxPlusForceReload = nil
     _akForceReload = (_forceReload == true)
     if not _akForceReload
-        and _gGuard._RbxPlusBuild == 901
+        and _gGuard._RbxPlusBuild == 902
         and _gGuard._RbxPlusLoadingDM == game
         and type(_gGuard._RbxPlusLoadingStart) == "number"
         and (os.clock() - _gGuard._RbxPlusLoadingStart) < 45
@@ -55,7 +55,7 @@ do
 end
 
 do
-    local AKPLUS_BUILD = 901
+    local AKPLUS_BUILD = 902
     local callerEnv = getfenv and getfenv(1) or nil
     local origEnv = getfenv and getfenv(0) or _G
     local g = (getgenv and getgenv()) or _G
@@ -5323,34 +5323,164 @@ do
         genv._RbxPlusWrappedReanimRun = wrappedRun
         return wrappedRun
     end
-    local function disableForeignVcConns()
+    local vcEnforcerConnsAttached = false
+    local vcNoopFn = function() end
+    local vcConnFields = {
+        "stateConnection",
+        "playerModeratedConnection",
+        "voiceToxicityModalConnection",
+        "voiceToxicityToastConnection",
+        "voiceReverseNudgeConnection",
+        "tempSetMicMutedToggleMicConnection",
+    }
+    local vcNoopMethods = {
+        "OnPlayerModerated",
+        "onLocalPlayerModerated",
+        "localPlayerModerated",
+        "LeaveVoiceForRestriction",
+        "StartModerationSignal",
+        "OnVoiceToxicityModal",
+        "OnVoiceToxicityToast",
+        "TempSetMicMutedToggleMic",
+        "onInstanceStateChanged",
+        "OnStateChanged",
+        "onStateChanged",
+    }
+    local function enforceVcPublishState(ak, forceUnsubPause)
         pcall(function()
-            local gc = getconnections or genv.getconnections
-            if type(gc) ~= "function" then return end
-            local cf = clonefunction or genv.clonefunction
-            if type(cf) == "function" then
-                local okCf, clonedGc = pcall(cf, gc)
-                if okCf and type(clonedGc) == "function" then
-                    gc = clonedGc
+            local curAk = type(ak) == "table" and ak or genv.AKUI
+            local vc = type(curAk) == "table" and curAk.vc or nil
+            if not (type(vc) == "table" and vc.on) then return end
+            local wantMuted = (vc.muted == true)
+            local okVci, vci = pcall(game.GetService, game, "VoiceChatInternal")
+            if okVci and vci then
+                local okP, isPaused = pcall(vci.IsPublishPaused, vci)
+                if not okP or isPaused ~= wantMuted or forceUnsubPause then
+                    pcall(vci.PublishPause, vci, wantMuted)
+                end
+                if forceUnsubPause and not wantMuted and vci.SubscribePauseAll then
+                    pcall(vci.SubscribePauseAll, vci, false)
                 end
             end
+            local lp = Players and Players.LocalPlayer
+            if lp then
+                local adi = lp:FindFirstChildOfClass("AudioDeviceInput")
+                if adi then
+                    pcall(function()
+                        if adi.Muted ~= wantMuted then
+                            adi.Muted = wantMuted
+                        end
+                        if adi.Active ~= (not wantMuted) then
+                            adi.Active = not wantMuted
+                        end
+                    end)
+                end
+            end
+        end)
+    end
+    local function neutralizeVcManagerTarget(target)
+        if type(target) ~= "table" then return end
+        for _, cKey in ipairs(vcConnFields) do
+            pcall(function()
+                local conn = rawget(target, cKey) or target[cKey]
+                if typeof(conn) == "RBXScriptConnection" then
+                    conn:Disconnect()
+                end
+            end)
+        end
+        for _, mKey in ipairs(vcNoopMethods) do
+            pcall(function()
+                local cur = rawget(target, mKey)
+                if cur ~= vcNoopFn then
+                    rawset(target, mKey, vcNoopFn)
+                end
+            end)
+        end
+        pcall(function()
+            if rawget(target, "isBanned") == true then
+                rawset(target, "isBanned", false)
+            end
+        end)
+    end
+    local function disableForeignVcConns()
+        pcall(function()
             local okVci, vci = pcall(game.GetService, game, "VoiceChatInternal")
-            if not okVci or not vci then return end
-            for _, sigName in ipairs({ "StateChanged", "LocalPlayerModerated" }) do
-                local okS, sig = pcall(function() return vci[sigName] end)
-                if okS and sig then
-                    local okC, list = pcall(gc, sig)
-                    if okC and type(list) == "table" then
-                        for _, conn in ipairs(list) do
-                            pcall(function()
-                                if conn.ForeignState or conn.Function == nil then
-                                    if conn.Disable then conn:Disable() end
+            if okVci and vci then
+                local gc = getconnections or genv.getconnections
+                if type(gc) == "function" then
+                    local cf = clonefunction or genv.clonefunction
+                    if type(cf) == "function" then
+                        local okCf, clonedGc = pcall(cf, gc)
+                        if okCf and type(clonedGc) == "function" then
+                            gc = clonedGc
+                        end
+                    end
+                    for _, sigName in ipairs({ "StateChanged", "LocalPlayerModerated" }) do
+                        local okS, sig = pcall(function() return vci[sigName] end)
+                        if okS and sig then
+                            local okC, list = pcall(gc, sig)
+                            if okC and type(list) == "table" then
+                                for _, conn in ipairs(list) do
+                                    pcall(function()
+                                        if conn.ForeignState or conn.Function == nil then
+                                            if conn.Disable then conn:Disable() end
+                                        end
+                                    end)
                                 end
-                            end)
+                            end
                         end
                     end
                 end
+                if not vcEnforcerConnsAttached then
+                    vcEnforcerConnsAttached = true
+                    local function onVcModOrState()
+                        local curAk = genv.AKUI
+                        local vc = type(curAk) == "table" and curAk.vc or nil
+                        if not (type(vc) == "table" and vc.on) then return end
+                        enforceVcPublishState(curAk, true)
+                        if task and task.defer then
+                            task.defer(function()
+                                enforceVcPublishState(genv.AKUI, true)
+                            end)
+                        end
+                        if task and task.delay then
+                            for _, dt in ipairs({ 0.05, 0.2, 0.6, 1.5 }) do
+                                task.delay(dt, function()
+                                    enforceVcPublishState(genv.AKUI, true)
+                                end)
+                            end
+                        end
+                    end
+                    for _, sigName in ipairs({ "LocalPlayerModerated", "StateChanged" }) do
+                        pcall(function()
+                            local sig = vci[sigName]
+                            if sig and sig.Connect then
+                                trackConn(sig:Connect(onVcModOrState))
+                            end
+                        end)
+                    end
+                end
             end
+            pcall(function()
+                local rGui = CoreGui:FindFirstChild("RobloxGui")
+                local mods = rGui and rGui:FindFirstChild("Modules")
+                local vcFolder = mods and mods:FindFirstChild("VoiceChat")
+                local vcsmMod = vcFolder and vcFolder:FindFirstChild("VoiceChatServiceManager")
+                if vcsmMod and vcsmMod:IsA("ModuleScript") then
+                    local okReq, vcsm = pcall(require, vcsmMod)
+                    if okReq and type(vcsm) == "table" then
+                        local def = rawget(vcsm, "default") or vcsm
+                        if type(def) == "table" then
+                            neutralizeVcManagerTarget(def)
+                            local cvm = rawget(def, "coreVoiceManager")
+                            if type(cvm) == "table" then
+                                neutralizeVcManagerTarget(cvm)
+                            end
+                        end
+                    end
+                end
+            end)
+            enforceVcPublishState(genv.AKUI, false)
         end)
     end
     local hookedUnibarInsts = setmetatable({}, { __mode = "k" })
@@ -5504,6 +5634,7 @@ do
                     local curVc = type(curAk) == "table" and curAk.vc or nil
                     if type(curVc) == "table" and curVc.on then
                         pcall(syncUnibarCompact, curAk)
+                        enforceVcPublishState(curAk, false)
                     end
                 end))
             end
