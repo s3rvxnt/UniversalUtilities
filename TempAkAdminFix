@@ -4546,23 +4546,56 @@ do
             end
         end)
     end
+    local patchedVcDockAt = setmetatable({}, { __mode = "k" })
     local function ensureVcBtnOnScreen(ak)
         pcall(function()
             local vc = type(ak) == "table" and ak.vc or nil
-            local btn = type(vc) == "table" and vc.btn or nil
-            if btn and typeof(btn) == "Instance" and btn:IsA("GuiObject") then
-                if btn.AbsolutePosition.Y < 2 then
-                    if type(vc.dockFind) == "function" then
-                        pcall(vc.dockFind)
+            if type(vc) ~= "table" then return end
+            if type(vc.roots) ~= "function" then
+                vc.roots = function()
+                    local out = { CoreGui }
+                    if gethui then
+                        local okH, hui = pcall(gethui)
+                        if okH and hui and hui ~= CoreGui then
+                            out[#out + 1] = hui
+                        end
                     end
-                    if type(vc.dockPos) == "function" then
-                        pcall(vc.dockPos)
+                    return out
+                end
+            end
+            if not patchedVcDockAt[vc] then
+                patchedVcDockAt[vc] = true
+                vc.dockAt = function(inst)
+                    if typeof(inst) ~= "Instance" or not inst:IsA("GuiObject") then
+                        return nil
                     end
-                    if btn.AbsolutePosition.Y < 2 then
-                        local root = ak.root
-                        local rootY = (root and typeof(root) == "Instance" and root:IsA("GuiObject")) and root.AbsolutePosition.Y or 0
-                        local targetOffsetY = (rootY < 10) and math.max(26, 54 - rootY) or -26
-                        vc.iPos = UDim2.new(0.5, 0, 0, targetOffsetY)
+                    while inst and inst:IsA("GuiObject") and inst.AbsoluteSize.X < 8 do
+                        inst = inst.Parent
+                    end
+                    if not (inst and inst:IsA("GuiObject")) then
+                        return nil
+                    end
+                    local sg = inst:FindFirstAncestorOfClass("ScreenGui")
+                    if not sg then
+                        return nil
+                    end
+                    local center = inst.AbsolutePosition + (inst.AbsoluteSize / 2)
+                    local root = ak.root
+                    local rootPos = (root and typeof(root) == "Instance") and root.AbsolutePosition or Vector2.new(0, -58)
+                    local pos = center - rootPos
+                    if pos.X <= 0 or pos.Y <= 0 then
+                        return nil
+                    end
+                    return pos
+                end
+                vc.dockScan = 0
+            end
+            local btn = vc.btn
+            if type(vc.dockPos) == "function" then
+                local okP, p = pcall(vc.dockPos)
+                if okP and typeof(p) == "Vector2" then
+                    vc.iPos = UDim2.fromOffset(p.X, p.Y)
+                    if btn and typeof(btn) == "Instance" and btn:IsA("GuiObject") then
                         btn.Position = vc.iPos
                     end
                 end
@@ -4573,6 +4606,7 @@ do
         if origVcFn == genv["_RbxUIWrapped_" .. vcKey] then return origVcFn end
         genv["_RbxUIOrig_" .. vcKey] = origVcFn
         local wrappedVcFn = function(...)
+            ensureVcBtnOnScreen(ak)
             if vcKey == "vcRun" then
                 pcall(function()
                     local vc = type(ak) == "table" and ak.vc or nil
